@@ -72,6 +72,13 @@ This is an active research area — CyKG-RAG, the IEEE GraphRAG-CTI dataset, and
 similar ground. No novelty is claimed for the approach; the goal is a well-built,
 well-evaluated, usable implementation.
 
+## Documentation
+
+- [CLAUDE.md](CLAUDE.md) — working rules, stack, and CI
+- [.claude/](.claude/) — architecture, graph schema, data sources, retrieval design,
+  evaluation protocol, testing strategy, and the eight-phase build plan
+- [.claude/decisions.md](.claude/decisions.md) — every deviation from the source spec, with reasons
+
 ## Attribution
 
 MITRE ATT&CK® is a registered trademark of The MITRE Corporation. Data from MITRE ATT&CK,
