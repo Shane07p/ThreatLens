@@ -1,0 +1,52 @@
+# ThreatLens — full dependency set
+#
+# AUTHORITATIVE SOURCE IS pyproject.toml + uv.lock.
+# This file exists for pip users and for a quick overview of what the project
+# pulls in. If the two disagree, pyproject.toml wins.
+#
+#   Preferred:  uv sync --all-groups
+#   Fallback:   pip install -r requirements.txt
+#
+# Dependencies are grouped by the phase that introduces them, so you can install
+# only what the phase you are working on needs. See .claude/phases.md.
+# Full setup instructions (database, API keys, snapshots): .claude/setup.md
+
+# ── Phase 1 — ATT&CK ingestion ────────────────────────────────────────────────
+stix2>=3.0.1                  # MITRE's own STIX 2.1 parser
+psycopg[binary]>=3.2          # Postgres driver
+SQLAlchemy>=2.0               # connection/engine management, not the ORM
+typer>=0.12                   # CLI
+python-dotenv>=1.0            # .env loading
+
+# ── Phase 2 — CVE ingestion + mappings bridge ────────────────────────────────
+httpx>=0.27                   # NVD API client
+tenacity>=9.0                 # backoff on NVD 403/503
+
+# ── Phase 3 — vector baseline ────────────────────────────────────────────────
+# Pulls in torch (~2 GB). CPU-only is fine; no GPU is used anywhere.
+sentence-transformers>=3.0    # BAAI/bge-small-en-v1.5, 384-dim
+pgvector>=0.3                 # Python bindings for the pgvector column type
+
+# ── Phase 4 — hybrid retrieval + reranking ───────────────────────────────────
+rank-bm25>=0.2.2              # lexical half of hybrid retrieval
+# reranker (BAAI/bge-reranker-base) also runs through sentence-transformers
+
+# ── Phase 6 — LLM providers ──────────────────────────────────────────────────
+# Only install the ones you actually have keys for.
+anthropic>=0.40               # Claude
+openai>=1.50                  # OpenAI, and via base_url: Groq, DeepSeek, Qwen, Kimi
+google-genai>=1.0             # Gemini
+
+# ── Development ──────────────────────────────────────────────────────────────
+pytest>=8.0
+pytest-timeout>=2.3
+ruff>=0.6
+
+# ── Not dependencies, but required to run the project ────────────────────────
+# Python 3.12          — see .python-version
+# Docker               — Postgres 16 + pgvector, via docker-compose.yml
+# uv                   — https://docs.astral.sh/uv/
+#
+# Model weights download on first use to ~/.cache/huggingface (~1.3 GB total):
+#   BAAI/bge-small-en-v1.5      ~130 MB
+#   BAAI/bge-reranker-base      ~1.1 GB
