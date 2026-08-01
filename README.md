@@ -76,7 +76,7 @@ well-evaluated, usable implementation.
 
 - [.claude/](.claude/) — architecture, graph schema, data sources, retrieval design,
   evaluation protocol, testing strategy, and the eight-phase build plan
-- [.claude/decisions.md](.claude/decisions.md) — every deviation from the source spec, with reasons
+- [.claude/decisions.md](.claude/decisions.md) — every  deviation from the source spec, with reasons
 
 ## Attribution
 
