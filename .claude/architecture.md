@@ -22,7 +22,7 @@
                        └──────────┬───────────┘
                                   ▼
                        ┌──────────────────────┐
-                       │ agent/loop.py        │  Claude decides:
+                       │ agent/graph.py       │  LangGraph. Model decides:
                        │ tools = retrieval fns│  "traverse further, or answer?"
                        └──────────┬───────────┘
                                   ▼
@@ -38,9 +38,9 @@ Anthropic API.
 |---|---|---|
 | `ingest/` | Network I/O, parsing, writing nodes/edges | Be imported by query-time code |
 | `graph/` | SQL, schema, traversal CTEs | Know about embeddings or LLMs |
-| `retrieval/` | Ranking, fusion, embeddings | Write to the database |
-| `llm/` | Provider protocol + vendor adapters | Know about the graph, retrieval, or prompts |
-| `agent/` | Tool definitions, the loop, prompts | Contain SQL, ranking logic, or a vendor SDK import |
+| `retrieval/` | Ranking, fusion, embeddings | Write to the DB, or import LangChain/LangGraph |
+| `llm/` | Provider seam over `init_chat_model` | Know about the graph, retrieval, or prompts |
+| `agent/` | Tool definitions, the LangGraph graph, prompts | Contain SQL or ranking logic |
 | `report/` | Markdown rendering | Call the LLM or the DB |
 | `eval/` | Harness, metrics, config matrix | Be imported by `retrieval/` or `agent/` |
 
@@ -49,7 +49,7 @@ move it to `ingest/`.
 
 ## Data flow at query time
 
-1. `cli.ask(question)` → `agent.loop.run(question)`
+1. `cli.ask(question)` → `agent.graph.app.invoke(...)`
 2. Agent calls tool `resolve_anchor(text)` → `retrieval.pipeline.resolve` → node ids
 3. Agent calls tool `traverse(node_id, depth, edge_kinds)` → `graph.traverse` → subgraph
 4. Agent calls tool `retrieve_text(node_ids, query)` → hybrid + RRF + rerank → evidence

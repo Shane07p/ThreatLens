@@ -9,15 +9,32 @@ E "not run." Say so honestly rather than shipping a half-working agent.
 
 ## Steps
 
-1. **Deps.** `uv add anthropic openai google-genai`
-   (`openai` covers OpenAI, Groq, DeepSeek, Qwen, and Kimi via `base_url` — see
-   [decisions.md](decisions.md) D14.)
+1. **Deps.**
+   ```bash
+   uv add langchain langgraph langchain-anthropic
+   # add per provider, only as needed:
+   uv add langchain-openai langchain-google-genai langchain-groq langchain-deepseek
+   ```
+   Qwen and Kimi go through `langchain-openai`'s `ChatOpenAI` with a custom `base_url` —
+   they need no dedicated package. See [decisions.md](decisions.md) D16.
 
-1a. **Provider layer first** — `llm/base.py` defines the `Provider` protocol and a
-   normalized `Response` (`text`, `tool_calls`, `usage`, `stop_reason`); `llm/registry.py`
-   maps `THREATLENS_PROVIDER` to an adapter. Build `AnthropicProvider` first, get the loop
-   working, then add `OpenAICompatProvider` and `GeminiProvider` against the same
-   conformance test. **No vendor SDK import escapes `llm/`.**
+1a. **Provider layer first** — `llm/registry.py` wraps `init_chat_model` behind a thin
+   `Provider` seam (~20 lines) so LangChain is never load-bearing:
+
+   ```python
+   from langchain.chat_models import init_chat_model
+
+   model = init_chat_model(settings.model, model_provider=settings.provider)
+   ```
+
+   **Before relying on it, verify `langchain-anthropic` actually surfaces adaptive thinking
+   and `output_config.effort`.** If they are only reachable through blind `model_kwargs`,
+   use the `anthropic` SDK directly for that provider — a 400 returning through two layers
+   is worse than no abstraction.
+
+1b. **Scope check — LangGraph belongs to this phase only.** `retrieval/pipeline.py`
+   (configs A–D) must not import LangChain or LangGraph. Those rows are deterministic and
+   LLM-free, and they carry the headline claim.
 
 2. **Tools** — `agent/tools.py`. Thin wrappers over Phase 4 functions:
 
@@ -31,14 +48,27 @@ E "not run." Say so honestly rather than shipping a half-working agent.
    Tool descriptions must say **when** to call, not just what the tool does — prescriptive
    descriptions measurably improve tool triggering.
 
-3. **The loop** — `agent/loop.py`, manual, written against `llm.Provider`
-   ([decisions.md](decisions.md) D11 — the harness needs to count every retrieval call, and
-   a vendor tool runner would only work for one provider).
+3. **The loop** — `agent/graph.py`, a LangGraph `StateGraph`
+   ([decisions.md](decisions.md) D16).
 
    ```python
-   provider = llm.registry.get(settings.provider)
-   resp = provider.complete(messages=messages, tools=TOOLS)
+   from langgraph.graph import StateGraph, END
+   from langgraph.prebuilt import ToolNode, tools_condition
+   from langgraph.checkpoint.sqlite import SqliteSaver
+
+   graph = StateGraph(AgentState)
+   graph.add_node("agent", call_model)          # model.bind_tools(TOOLS)
+   graph.add_node("tools", ToolNode(TOOLS))
+   graph.add_conditional_edges("agent", tools_condition)
+   graph.add_edge("tools", "agent")
+   app = graph.compile(checkpointer=SqliteSaver.from_conn_string("data/agent.db"))
    ```
+
+   `AgentState` carries `messages`, plus `tool_calls` and `evidence` accumulators — the eval
+   harness reads tool-call counts out of state rather than by wrapping the SDK.
+
+   **Checkpointing is the reason this is a graph.** An eval sweep over ~160 holdout CVEs
+   that dies at #140 must resume, not restart.
 
    Non-negotiable details:
    - Check the refusal stop reason **before** reading content. On Anthropic a refusal is a
@@ -48,11 +78,12 @@ E "not run." Say so honestly rather than shipping a half-working agent.
      tool-call blocks breaks the turn on every provider.
    - All tool results for one assistant turn go back in a **single** user message. Splitting
      them trains the model out of parallel tool calls.
-   - Cap iterations at `MAX_AGENT_STEPS` (default 8). An uncapped loop is a billing incident.
+   - Cap iterations — `app.invoke(..., {"recursion_limit": MAX_AGENT_STEPS})`, default 8.
+     An uncapped graph is a billing incident.
    - Log every tool call with its arguments and result size, plus the provider and model id.
      Tool-call count is a reported metric and it varies by provider.
    - Anthropic specifics (`thinking`, `effort`, no `temperature`/`top_p`/`top_k`/
-     `budget_tokens` — all 400 on `claude-opus-5`) live in the adapter, not here.
+     `budget_tokens` — all 400 on `claude-opus-5`) live in `llm/`, not here.
 
 4. **Grounded generation** — `agent/prompts.py`. The system prompt states: answer only from
    the assembled evidence; cite every claim by node id as `[^node_id]`; if the evidence does
