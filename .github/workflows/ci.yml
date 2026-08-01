@@ -1,0 +1,79 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Never let a stray API key reach CI — the eval suite must stay excluded.
+  PYTHONDONTWRITEBYTECODE: "1"
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Sync dependencies
+        run: uv sync --all-groups
+
+      - name: ruff check
+        run: uv run ruff check .
+
+      - name: ruff format --check
+        run: uv run ruff format --check .
+
+  test:
+    name: Tests (unit + integration)
+    runs-on: ubuntu-latest
+
+    services:
+      db:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: threatlens
+          POSTGRES_PASSWORD: threatlens
+          POSTGRES_DB: threatlens_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U threatlens"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      THREATLENS_TEST_DSN: postgresql://threatlens:threatlens@localhost:5432/threatlens_test
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Sync dependencies
+        run: uv sync --all-groups
+
+      - name: Enable pgvector
+        run: |
+          PGPASSWORD=threatlens psql -h localhost -U threatlens -d threatlens_test \
+            -c "CREATE EXTENSION IF NOT EXISTS vector;"
+
+      # `eval` tests call the Anthropic API. They are non-deterministic and they
+      # cost money, so CI never gates on them — see .claude/testing.md.
+      - name: Run tests
+        run: uv run pytest -m "not eval" --timeout=120
