@@ -46,6 +46,43 @@ Python 3.12 · PostgreSQL + pgvector · MITRE ATT&CK (STIX 2.1) · NVD · CVE→
 Explorer · `bge-small-en-v1.5` embeddings · BM25 + RRF + cross-encoder reranking · Anthropic
 SDK · Typer
 
+## Quick start
+
+Needs Python 3.12, [uv](https://docs.astral.sh/uv/), and Docker.
+
+```bash
+git clone https://github.com/Shane07p/ThreatLens.git
+cd ThreatLens
+
+uv sync --all-groups           # or: pip install -r requirements.txt
+cp .env.example .env           # then fill in NVD_API_KEY and one LLM provider key
+
+docker compose up -d db        # Postgres 16 + pgvector
+uv run threatlens db init      # create the schema
+
+uv run pytest -m "not eval"    # verify the setup
+```
+
+Then fetch the data snapshots and build the graph:
+
+```bash
+uv run threatlens fetch attack     # MITRE ATT&CK STIX bundle
+uv run threatlens fetch mappings   # CVE→ATT&CK mappings
+uv run threatlens fetch nvd        # CVE records (scoped, not the full NVD)
+
+uv run threatlens ingest attack
+uv run threatlens ingest cves
+uv run threatlens ingest mappings
+uv run threatlens stats            # sanity-check the graph
+```
+
+Full setup notes — API keys, provider selection, troubleshooting — are in
+[.claude/setup.md](.claude/setup.md). The build plan is in
+[.claude/phases.md](.claude/phases.md).
+
+> Commands beyond `db init` land as their phases are implemented. See
+> [.claude/phases.md](.claude/phases.md) for current status.
+
 ## Evaluation
 
 The point of the project. The CVE→ATT&CK Mappings Explorer provides labelled ground truth;
