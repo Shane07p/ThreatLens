@@ -1,7 +1,9 @@
 # ThreatLens working docs
 
-Index of the docs in this folder. [CLAUDE.md](../CLAUDE.md) at the repo root is the short
-version; these are the details.
+Index of the docs in this folder.
+
+> `CLAUDE.md` at the repo root is the short version of the working rules, but it is
+> **local-only and not tracked in git** — it will not appear in a fresh clone.
 
 ## Reference
 
@@ -38,7 +40,7 @@ original 8-week sequence.
 
 ## Reading order for a new session
 
-1. [../CLAUDE.md](../CLAUDE.md)
+1. [conventions.md](conventions.md) and [setup.md](setup.md) — the working rules
 2. [phases.md](phases.md) — find the current phase
 3. That phase's doc
 4. [decisions.md](decisions.md) if anything looks like it contradicts the spec

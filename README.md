@@ -74,7 +74,6 @@ well-evaluated, usable implementation.
 
 ## Documentation
 
-- [CLAUDE.md](CLAUDE.md) — working rules, stack, and CI
 - [.claude/](.claude/) — architecture, graph schema, data sources, retrieval design,
   evaluation protocol, testing strategy, and the eight-phase build plan
 - [.claude/decisions.md](.claude/decisions.md) — every deviation from the source spec, with reasons

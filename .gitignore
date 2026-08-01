@@ -12,7 +12,8 @@ wheels/
 # Secrets
 .env
 
-# Claude Code per-machine settings — never shared
+# Claude Code — local only
+CLAUDE.md
 .claude/settings.local.json
 
 # Data snapshots — large and reproducible from data/manifest.json.
