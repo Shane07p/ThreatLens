@@ -192,6 +192,49 @@ tool schemas and get their own adapters.
 
 ---
 
+### D16 — LangChain for providers, LangGraph for the agent loop
+
+**Spec says:** "The raw agentic loop (~15 lines); tools = graph queries + retrieval. Add
+LangGraph only if you later want checkpointed multi-step runs." Supersedes D11.
+
+**We do:** `init_chat_model` + `bind_tools` for provider normalization, and LangGraph for
+the Phase 6 agent loop.
+
+**Why LangChain over hand-written adapters:** `init_chat_model` normalizes messages and
+tool-calling across Anthropic, OpenAI, Gemini, Groq, and DeepSeek natively; Qwen and Kimi go
+through `ChatOpenAI` with a custom `base_url`. That deletes roughly 250 lines of adapter
+code we would otherwise own and maintain.
+
+**Why LangGraph:** checkpointing is the real argument. An eval sweep over ~160 holdout CVEs
+that dies at #140 currently restarts from zero; a checkpointer resumes it. Explicit graph
+state also beats a hand-rolled loop once retry, re-query, and step-budget logic land.
+
+**The line that must hold — LangGraph is Phase 6 only:**
+
+| Config | Path | Framework |
+|---|---|---|
+| A–D | `retrieval/pipeline.py` | **None.** Plain Python, deterministic, LLM-free. |
+| E | `agent/graph.py` | LangGraph |
+
+Configs A–D produce the retrieval metrics the headline claim rests on. They must be exactly
+reproducible, so they do not import LangChain or LangGraph at all. Routing them through an
+agent framework would add a dependency and a nondeterminism surface to precisely the rows
+that need neither.
+
+**Consequences to respect:**
+- The `Provider` seam stays (~20 lines). LangChain must never be load-bearing — if
+  `langchain-anthropic` lags on a parameter we need, we drop to the raw SDK for that
+  provider without touching `agent/`.
+- **Verify adaptive thinking and `output_config.effort` are actually surfaced** by the
+  installed `langchain-anthropic` before relying on it. These are recent Anthropic
+  parameters; if they are only reachable via blind `model_kwargs`, that is worse than
+  calling the SDK directly, because a 400 then returns through two layers.
+- Token accounting per provider still has to be verified. The eval table reports tokens and
+  cost per config, and a field LangChain does not normalize becomes a silently blank column.
+- Tool-call counts come from LangGraph state, not from wrapping the SDK.
+
+---
+
 ### D15 — CI gates on lint + `not eval`; never on the LLM suite
 
 GitHub Actions runs `ruff check`, `ruff format --check`, and `pytest -m "not eval"` against a
