@@ -46,42 +46,101 @@ Python 3.12 · PostgreSQL + pgvector · MITRE ATT&CK (STIX 2.1) · NVD · CVE→
 Explorer · `bge-small-en-v1.5` embeddings · BM25 + RRF + cross-encoder reranking · Anthropic
 SDK · Typer
 
-## Quick start
+## Setup
 
-Needs Python 3.12, [uv](https://docs.astral.sh/uv/), and Docker.
+> Commands beyond `db init` land as their phases are implemented. See
+> [.claude/phases.md](.claude/phases.md) for current status.
+
+### 1. Prerequisites
+
+| Tool | Why |
+|---|---|
+| **Python 3.12** | pinned in `.python-version` |
+| **[uv](https://docs.astral.sh/uv/)** | environment and dependency management |
+| **Docker** | runs Postgres 16 + pgvector |
+
+### 2. Install
 
 ```bash
 git clone https://github.com/Shane07p/ThreatLens.git
 cd ThreatLens
 
-uv sync --all-groups           # or: pip install -r requirements.txt
-cp .env.example .env           # then fill in NVD_API_KEY and one LLM provider key
-
-docker compose up -d db        # Postgres 16 + pgvector
-uv run threatlens db init      # create the schema
-
-uv run pytest -m "not eval"    # verify the setup
+uv sync --all-groups           # preferred
+# pip install -r requirements.txt   # if you'd rather not use uv
 ```
 
-Then fetch the data snapshots and build the graph:
+`uv add <package>` to add a dependency — never `pip install` into the project
+environment, or `uv.lock` and CI drift apart.
+
+### 3. Configure
+
+```bash
+cp .env.example .env
+```
+
+Fill in:
+
+| Variable | Required | Notes |
+|---|---|---|
+| `DATABASE_URL` | yes | pre-filled for the Docker container |
+| `NVD_API_KEY` | recommended | free, by email — [request one](https://nvd.nist.gov/developers/request-an-api-key). Raises the rate limit from 5 req/30s to 50. |
+| `THREATLENS_PROVIDER` | yes | `anthropic` \| `openai` \| `gemini` \| `groq` \| `deepseek` \| `qwen` \| `kimi` |
+| `<PROVIDER>_API_KEY` | phase 6+ | only the one for the provider you selected |
+
+`.env` is gitignored. Never commit real keys — the repo goes public eventually,
+and a key in any commit is compromised the moment it does.
+
+### 4. Database
+
+```bash
+docker compose up -d db        # Postgres 16 + pgvector, plus a test database
+uv run threatlens db init      # apply the schema
+```
+
+### 5. Verify
+
+```bash
+uv run pytest -m "not eval"    # unit + integration; no API calls, no cost
+```
+
+Green means the environment is correct. This is the same command CI runs.
+
+### 6. Build the graph
 
 ```bash
 uv run threatlens fetch attack     # MITRE ATT&CK STIX bundle
 uv run threatlens fetch mappings   # CVE→ATT&CK mappings
-uv run threatlens fetch nvd        # CVE records (scoped, not the full NVD)
+uv run threatlens fetch nvd        # CVE records (scoped, not all 250k)
 
 uv run threatlens ingest attack
 uv run threatlens ingest cves
 uv run threatlens ingest mappings
-uv run threatlens stats            # sanity-check the graph
+uv run threatlens ingest chains    # derive CHAINS_TO edges
+uv run threatlens embed            # embed node text
+
+uv run threatlens stats            # node/edge counts — sanity-check before trusting anything
+uv run threatlens show T1190       # one technique, end to end
 ```
 
-Full setup notes — API keys, provider selection, troubleshooting — are in
-[.claude/setup.md](.claude/setup.md). The build plan is in
-[.claude/phases.md](.claude/phases.md).
+Snapshots land in `data/` (gitignored) and are recorded in `data/manifest.json`
+with URL, sha256, and version. **Pin them.** If the ATT&CK snapshot changes
+mid-project, every measured number becomes incomparable.
 
-> Commands beyond `db init` land as their phases are implemented. See
-> [.claude/phases.md](.claude/phases.md) for current status.
+First run of `embed` downloads `bge-small-en-v1.5` (~130 MB); the reranker
+(~1.1 GB) downloads on first use. Both are CPU-only — no GPU anywhere.
+
+### Troubleshooting
+
+| Symptom | Cause |
+|---|---|
+| `type "vector" does not exist` | `CREATE EXTENSION vector` not run in *this* database |
+| NVD 403 / 503 storms | missing or wrong `apiKey` header — the limiter is per key |
+| Mappings CSV 404 | the `&` in `Att&ckToCveMappings.csv` must stay URL-encoded as `%26` |
+| 400 from the Anthropic API | `temperature` / `top_p` / `budget_tokens` were passed — remove them |
+| CI red on formatting | run `uv run ruff format .` and commit |
+
+Deeper notes on data sources, provider selection, and the graph schema are in
+[.claude/](.claude/); the build plan is in [.claude/phases.md](.claude/phases.md).
 
 ## Evaluation
 
