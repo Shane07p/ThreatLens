@@ -35,6 +35,11 @@ markers = [
 [tool.ruff]
 line-length = 100
 src = ["src", "tests"]
+# Markdown is documentation, not source. Ruff formats Python blocks inside .md
+# files, which rewrites illustrative snippets in the design docs (aligned
+# comments, wrapped signatures) purely to satisfy a formatter that will never
+# execute them. Config, not a CI flag, so local and CI always agree.
+extend-exclude = ["*.md"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
