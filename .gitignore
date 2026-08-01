@@ -1,0 +1,24 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Secrets
+.env
+
+# Local working docs — kept on disk, not published
+.claude/
+threat_intel_graphrag_spec (1).md
+threatlens_phase1-3_data_sources_guide.md
+
+# Data snapshots — large and reproducible from data/manifest.json.
+# data/eval/ and data/manifest.json are deliberately tracked (see .claude/decisions.md D13).
+data/raw/
+!data/eval/
+!data/manifest.json
