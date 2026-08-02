@@ -31,11 +31,18 @@ pgvector>=0.3                 # Python bindings for the pgvector column type
 rank-bm25>=0.2.2              # lexical half of hybrid retrieval
 # reranker (BAAI/bge-reranker-base) also runs through sentence-transformers
 
-# ── Phase 6 — LLM providers ──────────────────────────────────────────────────
-# Only install the ones you actually have keys for.
-anthropic>=0.40               # Claude
-openai>=1.50                  # OpenAI, and via base_url: Groq, DeepSeek, Qwen, Kimi
-google-genai>=1.0             # Gemini
+# ── Phase 6 — agent loop + LLM providers ─────────────────────────────────────
+langchain>=0.3                # init_chat_model: one interface across providers
+langgraph>=0.2                # the agent loop, with checkpointing
+langchain-anthropic>=0.3      # Claude (default provider)
+
+# Add only the providers you actually have keys for.
+# Qwen and Kimi need no package — they go through langchain-openai's ChatOpenAI
+# with a custom base_url.
+# langchain-openai>=0.2
+# langchain-google-genai>=2.0
+# langchain-groq>=0.2
+# langchain-deepseek>=0.1
 
 # ── Development ──────────────────────────────────────────────────────────────
 pytest>=8.0

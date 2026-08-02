@@ -65,7 +65,11 @@ candidate count and cache by `(query, node_id)`.
 
 ## Stage 5 — Agentic loop
 
-`agent/loop.py`. Claude drives what to retrieve next.
+`agent/graph.py`, a LangGraph `StateGraph`. The model drives what to retrieve next.
+
+**Stages 1–4 above are configs A–D and must not import LangChain or LangGraph.** They are
+deterministic and LLM-free, and they carry the headline claim. Only this stage — config E —
+is a graph. See [decisions.md](decisions.md) D16.
 
 Tools exposed to the model:
 
@@ -76,41 +80,51 @@ Tools exposed to the model:
 | `retrieve_text` | node_ids, query | ranked evidence passages with node ids |
 | `get_node` | node_id | full record + source_url |
 
-The loop talks to `llm.Provider`, never to a vendor SDK (see
-[decisions.md](decisions.md) D14):
+Tool descriptions state **when** to call, not just what the tool does — prescriptive
+descriptions measurably improve triggering.
 
 ```python
-provider = llm.registry.get(settings.provider)      # anthropic | openai | gemini | groq | ...
-resp = provider.complete(messages=messages, tools=TOOLS)
-# resp: .text, .tool_calls, .usage, .stop_reason  — normalized across providers
+from langchain.chat_models import init_chat_model
+from langgraph.graph import StateGraph
+from langgraph.prebuilt import ToolNode, tools_condition
+from langgraph.checkpoint.sqlite import SqliteSaver
+
+model = init_chat_model(settings.model, model_provider=settings.provider).bind_tools(TOOLS)
+
+graph = StateGraph(AgentState)          # messages + tool_calls + evidence accumulators
+graph.add_node("agent", call_model)
+graph.add_node("tools", ToolNode(TOOLS))
+graph.add_conditional_edges("agent", tools_condition)
+graph.add_edge("tools", "agent")
+app = graph.compile(checkpointer=SqliteSaver.from_conn_string("data/agent.db"))
 ```
 
 Rules:
-- Cap iterations (`MAX_AGENT_STEPS`, default 8). An uncapped loop is a billing incident.
-- Append the full assistant turn back to `messages`, not just the text — dropping tool-call
-  blocks breaks the conversation on every provider.
-- Return all tool results for one assistant turn in a **single** user message.
+- Cap iterations — `app.invoke(..., {"recursion_limit": MAX_AGENT_STEPS})`, default 8. An
+  uncapped graph is a billing incident.
+- **Checkpointing is the reason this is a graph.** An eval sweep over ~160 holdout CVEs that
+  dies at #140 resumes rather than restarting.
+- Tool-call counts come from graph state, not from wrapping an SDK — the eval table reports
+  them per config.
 - Handle a refusal stop reason before reading content. On Anthropic this is a normal HTTP
   200, not an exception; this is a security-adjacent domain and it will happen.
 
-Provider-specific detail lives inside the adapter:
+Provider selection is a config change, not a code change — `init_chat_model` normalizes
+messages and tool-calling across Anthropic, OpenAI, Gemini, Groq, and DeepSeek; Qwen and Kimi
+go through `ChatOpenAI` with a `base_url`.
 
-| Adapter | Specifics it absorbs |
-|---|---|
-| `AnthropicProvider` | `thinking={"type": "adaptive"}`, `output_config={"effort": "high"}`, `max_tokens=16000`. Never `temperature`/`top_p`/`top_k`/`budget_tokens` — 400 on `claude-opus-5`. |
-| `OpenAICompatProvider` | `base_url` per vendor (OpenAI, Groq, DeepSeek, Qwen, Kimi); `tools` in OpenAI function-call schema |
-| `GeminiProvider` | `functionDeclarations`, `parts`-shaped messages |
-
-The manual loop is preferred over any SDK's built-in tool runner because the eval harness
-needs to count and log every retrieval call — and because a vendor runner would only work
-for one provider.
+**Anthropic caveat:** verify the installed `langchain-anthropic` actually surfaces
+`thinking={"type": "adaptive"}` and `output_config={"effort": "high"}`. If they are only
+reachable through blind `model_kwargs`, use the `anthropic` SDK directly for that provider —
+the `Provider` seam in `llm/` exists so that swap costs nothing in `agent/`. Never pass
+`temperature`, `top_p`, `top_k`, or `budget_tokens`; all return 400 on `claude-opus-5`.
 
 ## Stage 6 — Grounded generation
 
 Every claim carries a node id. The generation prompt states: answer only from the evidence
 set; if the evidence does not support a claim, say so.
 
-Post-check before returning (in `agent/loop.py`, not the prompt):
+Post-check before returning (in `agent/graph.py`, not the prompt):
 - Every citation marker resolves to a node id in the evidence set → else drop the sentence
   and log it.
 - Citation coverage is computed and returned with the answer; the eval harness asserts it
