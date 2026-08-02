@@ -55,19 +55,22 @@ That way a hallucinated URL is structurally impossible.
 
 ## LLM providers
 
-No vendor SDK is imported outside `llm/`. `agent/` and `eval/` depend only on the
-`Provider` protocol, so swapping Claude for Groq is a config change, not a code change.
+`llm/registry.py` wraps `init_chat_model` behind a thin `Provider` seam. Swapping Claude for
+Groq is a config change, not a code change.
 
 ```python
-class Provider(Protocol):
-    name: str
-    def complete(self, messages: list[Msg], tools: list[ToolSpec]) -> Response: ...
+from langchain.chat_models import init_chat_model
+
+model = init_chat_model(settings.model, model_provider=settings.provider)
 ```
 
-`Response` is normalized across providers: `text`, `tool_calls`, `usage`, `stop_reason`.
-Vendor quirks are absorbed by the adapter and never leak upward.
+Covers Anthropic, OpenAI, Gemini, Groq, and DeepSeek natively; Qwen and Kimi go through
+`ChatOpenAI` with a `base_url`.
 
-Anthropic adapter, fixed:
+**Keep the seam thin — LangChain must never be load-bearing.** If a wrapper lags on a
+parameter we need, we drop to that vendor's SDK inside `llm/` without touching `agent/`.
+
+Anthropic, fixed:
 
 ```python
 model="claude-opus-5"
@@ -76,13 +79,21 @@ thinking={"type": "adaptive"}
 output_config={"effort": "high"}
 ```
 
-Never pass `temperature`, `top_p`, `top_k`, or `thinking.budget_tokens` — all return 400 on
-this model. Check `stop_reason` before reading `response.content`; a refusal arrives as a
-normal HTTP 200.
+Verify `langchain-anthropic` actually surfaces `thinking` and `output_config.effort` before
+relying on it — if they only go through blind `model_kwargs`, use the SDK directly. Never
+pass `temperature`, `top_p`, `top_k`, or `budget_tokens`; all return 400 on this model. Check
+the stop reason before reading content — a refusal arrives as a normal HTTP 200.
 
-OpenAI-compatible adapter covers OpenAI, Groq, DeepSeek, Qwen, and Kimi — same wire format,
-different `base_url` and model id. Gemini needs its own adapter (different tool and
-message-part schema).
+## Framework boundary
+
+| Layer | May import LangChain / LangGraph |
+|---|---|
+| `ingest/`, `graph/`, `retrieval/`, `report/` | **No** |
+| `eval/` | No — it calls configs A–D directly |
+| `llm/`, `agent/` | Yes |
+
+Configs A–D are deterministic and LLM-free and produce the numbers the project's claim rests
+on. Only config E, the agent loop, is a graph. See [decisions.md](decisions.md) D16.
 
 ## Commits
 

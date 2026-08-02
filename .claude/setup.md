@@ -28,7 +28,7 @@ uv add sentence-transformers pgvector
 # phase 4
 uv add rank-bm25
 # phase 6
-uv add anthropic
+uv add langchain langgraph langchain-anthropic
 # dev, any time
 uv add --dev pytest pytest-timeout ruff
 ```

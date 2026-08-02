@@ -133,7 +133,7 @@ claim; "built against ATT&CK" is not.
 
 ---
 
-### D11 — Manual agent loop, not the SDK tool runner
+### D11 — Manual agent loop, not the SDK tool runner  *(SUPERSEDED by D16)*
 
 **Spec says:** "the raw agentic loop (~15 lines)".
 
@@ -165,7 +165,7 @@ checksums.
 
 ---
 
-### D14 — Multi-provider LLM support behind one protocol
+### D14 — Multi-provider LLM support behind one protocol  *(adapter design SUPERSEDED by D16)*
 
 **Spec says:** "Anthropic SDK (or any LLM SDK) native tool-use."
 
