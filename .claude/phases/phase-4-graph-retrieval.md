@@ -5,7 +5,7 @@
 
 This is the deep core of the project. Protect it; cut other things first.
 
-Design detail lives in [retrieval.md](retrieval.md); this doc is the build order.
+Design detail lives in [retrieval.md](../design/retrieval.md); this doc is the build order.
 
 ## Steps
 
@@ -13,7 +13,7 @@ Design detail lives in [retrieval.md](retrieval.md); this doc is the build order
 
 2. **`CHAINS_TO` derivation** — `ingest/chains.py`. Actor co-occurrence, ≥3 shared actors,
    directed by kill-chain phase order, weight = normalized shared-actor count. SQL is in
-   [graph-schema.md](graph-schema.md); reasoning in [decisions.md](decisions.md) D5.
+   [graph-schema.md](../design/graph-schema.md); reasoning in [decisions.md](../design/decisions.md) D5.
 
    Build `tactic_order` (14 shortnames → index) as a static table. A technique in multiple
    tactics takes its lowest index.
@@ -26,7 +26,7 @@ Design detail lives in [retrieval.md](retrieval.md); this doc is the build order
    is a legitimate result.
 
 4. **Traversal** — `graph/traverse.py`, the recursive CTE from
-   [graph-schema.md](graph-schema.md).
+   [graph-schema.md](../design/graph-schema.md).
    - Cycle guard is mandatory (`NOT dst = ANY(path)`). Without it the query never returns.
    - `max_depth=3`, `node_budget=200`, both from `config.py`.
    - Direction-aware: `USES` is walked backwards from technique to actor, so the API takes

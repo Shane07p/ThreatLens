@@ -4,6 +4,179 @@ Test-first for ingestion parsers, traversal, and ranking. Those three are where 
 wrongness lives: a parser that drops 15% of edges and a reranker that inverts its sort both
 produce plausible output and a garbage ablation table.
 
+Code and comment rules are in [coderule.md](coderule.md); git, CI, and data rules are in
+[otherrule.md](otherrule.md).
+
+## Rules
+
+**Testing is the priority, not an afterthought.** A parser that silently drops fifteen
+percent of the edges produces a graph that looks entirely reasonable and numbers that are
+worthless. The assertion is what makes a dropped edge a decision rather than an accident.
+
+**Tests come first for parsers and ranking.** Those are the places failure is silent and
+plausible. Structural code — wiring, CLI, rendering — can be tested after.
+
+**Test three layers, not one.** Most suites only ever cover the first:
+
+1. **Correctness** — the right answer on well-formed input.
+2. **Robustness** — malformed, missing, duplicated, self-referential, hostile input. Real
+   data is not clean, and one bad upstream release should not take down an ingest.
+3. **Invariants** — properties that must hold for *any* input. No dangling edges. Ids that
+   round-trip. Parsing that is deterministic across runs.
+
+**Cases worth writing every time:**
+
+- empty input, and input missing a field you assumed was always present
+- duplicates, and two records claiming the same identity
+- unicode, very long values, and text shaped like SQL injection
+- something that should be *ignored*, asserted as distinct from something that was *lost*
+- scale — an input several times larger than production
+- determinism — the same input twice must give byte-identical output
+
+**Name the test after the behavior, not the function.**
+`test_revoked_objects_are_skipped`, not `test_parse_bundle_2`. The name is what a failing
+build shows you first.
+
+**Give a test a docstring when the reason it exists is not obvious from its name** —
+especially a test guarding a bug that already happened once.
+
+**Assert the property, not the incidental value.** Assert ordering, not float scores.
+Assert the shape of a path, not a row count that will drift with the next data release.
+
+**Never touch the network, a database, or model weights in a unit test.** `conftest.py`
+blocks sockets for anything not marked `db` or `eval`. A suite that fails when GitHub is
+slow gets disabled by the team within a week.
+
+**Golden files are generated once and read by a human before being committed.** A golden
+file produced by a buggy parser locks the bug in permanently, and every later phase inherits
+it. Update one deliberately, never to make a red test go green.
+
+**Do not test:** exact LLM wording, exact reranker floats, third-party parsing already
+covered by its own library, or a live external API.
+
+## Adding tests for something new
+
+The procedure below is the same whether you are adding a module, a function, or a bug fix.
+Follow it rather than improvising — the point is that two people adding tests six weeks
+apart produce files that look alike.
+
+### 1. Decide where the tests live
+
+| What you are testing | Directory | Marker | Runs in CI |
+|---|---|---|---|
+| Pure function — parsing, maths, ranking, formatting | `tests/unit/` | none | yes |
+| Anything touching Postgres | `tests/integration/` | `db` | yes |
+| Anything loading model weights or a big corpus | `tests/unit/` or `integration/` | `slow` | yes |
+| Anything calling an LLM | `tests/eval/` | `eval` | **no** |
+
+One test file per source module, named `test_<module>.py`. When a module needs both
+correctness and robustness coverage and the file is getting long, split it:
+`test_attack.py` and `test_attack_robustness.py`. Long files are hard to read and hard to
+review.
+
+### 2. Work out the cases before writing any
+
+Take each input the function accepts and walk it through the same list. This is mechanical
+on purpose — it stops you only writing the cases you already know pass.
+
+| For every input, ask | Example case |
+|---|---|
+| What if it is empty? | empty list, empty string, empty file |
+| What if the field is missing entirely? | a dict without the key you assumed |
+| What if there are two of them? | duplicate ids, two records claiming one identity |
+| What if it is far bigger than expected? | 200k-character description, 5k records |
+| What if it is not ASCII? | unicode, emoji, right-to-left text |
+| What if it is hostile? | text shaped like SQL, path traversal, injection |
+| What if it points at something absent? | a reference to an id that was filtered out |
+| What if it points at itself? | self-referential edge, cyclic structure |
+
+Then add the three that are about the function rather than its inputs:
+
+- **Determinism** — same input twice, byte-identical output.
+- **An invariant** — something true of *every* output, whatever went in.
+- **The distinction between ignored and lost** — assert that a thing you deliberately skip
+  is *not* counted as an error, and that a thing you drop *is*.
+
+That last one catches a whole class of quiet bugs. Something out of scope and something
+genuinely lost look identical in a count unless you separate them on purpose.
+
+### 3. Write the test first where it counts
+
+Tests come first for parsers, ranking, and anything whose failure is silent. For wiring,
+CLI, and rendering, test-after is fine.
+
+Write the assertion, run it, **watch it fail for the reason you expect**. A test that has
+never failed has not been shown to test anything. If it passes immediately, it is asserting
+something already true elsewhere.
+
+### 4. Choose fixture style deliberately
+
+| Situation | Approach |
+|---|---|
+| The shape under test is small and specific to one case | Build it inline in the test |
+| Several tests share one realistic input | A file in `tests/fixtures/`, committed |
+| The real input is huge | A hand-trimmed sample of it, with a comment saying what was kept and why |
+
+Inline is preferred for robustness tests: the reader sees exactly the shape being tested
+with no jumping between files. Use a helper to build variants so the noise stays low:
+
+```python
+def technique(ext_id: str, phases: list[str] | None = None, **extra) -> dict:
+    """Build a minimal attack-pattern object. Pass extra kwargs to override anything."""
+```
+
+Fixture files must contain the awkward cases, not just the happy ones. A fixture of five
+well-formed records proves very little.
+
+### 5. Name and document
+
+Name the test after the behavior: `test_revoked_objects_are_skipped`. Someone reading a
+failing build should understand what broke without opening the file.
+
+Add a docstring when the reason the test exists is not obvious from the name — and always
+when it guards a bug that already happened once:
+
+```python
+def test_missing_score_is_none_not_zero(records):
+    """A fabricated 0.0 severity reads as 'no risk' in an answer someone may act on."""
+```
+
+### 6. Run it, then run everything
+
+```bash
+uv run pytest tests/unit/test_your_module.py -v     # the new file
+uv run ruff check . && uv run ruff format .
+uv run pytest -m "not eval"                          # what CI runs
+```
+
+Never commit on a red suite, and never skip a test to get green — a skipped test that
+should run is worse than a failing one, because nothing reminds you.
+
+## When you find a bug later
+
+Reproduce it as a failing test **before** fixing it. Watch it fail, then fix, then watch it
+pass. This is not ceremony:
+
+- It proves you actually found the cause rather than something adjacent.
+- It stops the bug coming back silently.
+- It documents, permanently, that the behavior was once wrong.
+
+Put the regression test next to the tests for that module, with a docstring saying what went
+wrong. The next person needs the story, not just the assertion.
+
+## When a test fails after someone else's change
+
+Work out which of these it is before touching anything:
+
+1. **The change broke something** — fix the change.
+2. **The test asserted an incidental detail** — a row count, a float, an ordering that was
+   never guaranteed. Fix the test to assert the property instead.
+3. **The behavior deliberately changed** — update the test *and* say so in the commit
+   message.
+
+What you must not do is weaken an assertion until it passes. If a golden file no longer
+matches, regenerate it only after reading the diff and confirming every change was intended.
+
 ## Layout
 
 ```
@@ -101,7 +274,7 @@ What it asserts, per provider:
 Providers are skipped individually when their key is absent, so a contributor with one key
 can still run the suite. A provider that cannot hold a tool-calling loop is not supported by
 the agent, however good its prose is — record that outcome in
-[decisions.md](decisions.md) rather than working around it.
+[decisions.md](../design/decisions.md) rather than working around it.
 
 ## Unit tests
 
@@ -123,7 +296,7 @@ Embeddings are stubbed in unit tests — a deterministic fake encoder returning 
 
 What must be covered:
 
-**`test_stix_parse.py`** — the gotchas from [graph-schema.md](graph-schema.md) are each a
+**`test_stix_parse.py`** — the gotchas from [graph-schema.md](../design/graph-schema.md) are each a
 test:
 - ATT&CK id is pulled from `external_references[source_name == "mitre-attack"].external_id`
 - `revoked: true` objects are skipped

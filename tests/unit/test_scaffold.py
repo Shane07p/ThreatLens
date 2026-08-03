@@ -1,7 +1,7 @@
 """Scaffold tests.
 
 These verify the harness itself, not the application — the package imports, the
-markers are registered, and the network guard actually blocks. Phase 1 replaces
+markers are registered, and the network guard actually blocks. Real tests replace
 this file's role with real ingestion tests; the network-guard test stays.
 """
 

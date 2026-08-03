@@ -1,8 +1,12 @@
 # Decisions
 
-Deviations from [threat_intel_graphrag_spec (1).md](../threat_intel_graphrag_spec%20(1).md)
-and [threatlens_phase1-3_data_sources_guide.md](../threatlens_phase1-3_data_sources_guide.md),
+Deviations from [threat_intel_graphrag_spec (1).md](../../threat_intel_graphrag_spec%20(1).md),
 with reasons. Append, don't rewrite.
+
+Several entries below also correct the original phase 1-3 data sources guide. That guide has
+been folded into [data-sources.md](data-sources.md) — which carries the corrections rather
+than the mistakes — and removed from the repository. Its content lives on there; the
+decisions here record what was wrong with it and why.
 
 ---
 

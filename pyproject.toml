@@ -4,7 +4,13 @@ version = "0.1.0"
 description = "A Graph-RAG threat-intelligence agent over the MITRE ATT&CK / CVE knowledge graph"
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "psycopg[binary]>=3.3.4",
+    "python-dotenv>=1.2.2",
+    "sqlalchemy>=2.0.51",
+    "stix2>=3.0.2",
+    "typer>=0.27.1",
+]
 
 [project.scripts]
 threatlens = "threatlens.cli:app"
@@ -15,6 +21,9 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/threatlens"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"src/threatlens/graph/schema.sql" = "threatlens/graph/schema.sql"
 
 [dependency-groups]
 dev = [

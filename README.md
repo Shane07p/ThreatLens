@@ -49,7 +49,7 @@ SDK · Typer
 ## Setup
 
 > Commands beyond `db init` land as their phases are implemented. See
-> [.claude/phases.md](.claude/phases.md) for current status.
+> [.claude/phases/phases.md](.claude/phases/phases.md) for current status.
 
 ### 1. Prerequisites
 
@@ -140,7 +140,7 @@ First run of `embed` downloads `bge-small-en-v1.5` (~130 MB); the reranker
 | CI red on formatting | run `uv run ruff format .` and commit |
 
 Deeper notes on data sources, provider selection, and the graph schema are in
-[.claude/](.claude/); the build plan is in [.claude/phases.md](.claude/phases.md).
+[.claude/](.claude/); the build plan is in [.claude/phases/phases.md](.claude/phases/phases.md).
 
 ## Evaluation
 
@@ -172,7 +172,7 @@ well-evaluated, usable implementation.
 
 - [.claude/](.claude/) — architecture, graph schema, data sources, retrieval design,
   evaluation protocol, testing strategy, and the eight-phase build plan
-- [.claude/decisions.md](.claude/decisions.md) — every  deviation from the source spec, with reasons
+- [.claude/design/decisions.md](.claude/design/decisions.md) — every  deviation from the source spec, with reasons
 
 ## Attribution
 

@@ -13,7 +13,7 @@ deliverable** — not the code.
 2. **Embed.** `BAAI/bge-small-en-v1.5`, 384 dims, CPU, MIT licensed, ~33M params.
 
    Chunk before embedding — the model truncates at 512 tokens and several technique
-   descriptions exceed it ([decisions.md](decisions.md) D6). Write chunks to `node_chunks`,
+   descriptions exceed it ([decisions.md](../design/decisions.md) D6). Write chunks to `node_chunks`,
    embed each, index with HNSW cosine.
 
    ```python
@@ -36,7 +36,7 @@ deliverable** — not the code.
 4. **Minimal harness.** `eval/harness.py` + `eval/configs.py` with config `A` only. It uses
    the metric functions written in Phase 2 and emits the same result JSON that Phase 5 will
    emit for configs B–E. Same code path, or the comparison is meaningless
-   ([decisions.md](decisions.md) D4).
+   ([decisions.md](../design/decisions.md) D4).
 
 5. **Measure row A against the holdout, and record it.**
    ```bash
@@ -44,7 +44,7 @@ deliverable** — not the code.
    ```
    Writes `eval_results/<timestamp>.json` with git sha, config values, ATT&CK version,
    mappings snapshot date, per-query results, and aggregates. Paste the aggregates into
-   [evaluation.md](evaluation.md) row A.
+   [evaluation.md](../design/evaluation.md) row A.
 
 6. **Optional but useful:** wire the top-k results straight into a single LLM call for a
    qualitative answer. Not required for the number, and it costs tokens — the retrieval
@@ -80,7 +80,7 @@ uv run pytest -m "not eval"
 - [ ] Every node with text has ≥1 embedded chunk
 - [ ] HNSW index exists and is used (check `EXPLAIN`)
 - [ ] `threatlens eval --config A --eval-mode` runs end to end on the full holdout
-- [ ] Row A of the ablation table in [evaluation.md](evaluation.md) is filled with real
+- [ ] Row A of the ablation table in [evaluation.md](../design/evaluation.md) is filled with real
       numbers **and** n + confidence interval
 - [ ] The result JSON records git sha, config, and data versions
 - [ ] `uv run pytest -m "not eval"` is green
