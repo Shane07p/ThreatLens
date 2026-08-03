@@ -16,7 +16,7 @@ E "not run." Say so honestly rather than shipping a half-working agent.
    uv add langchain-openai langchain-google-genai langchain-groq langchain-deepseek
    ```
    Qwen and Kimi go through `langchain-openai`'s `ChatOpenAI` with a custom `base_url` —
-   they need no dedicated package. See [decisions.md](decisions.md) D16.
+   they need no dedicated package. See [decisions.md](../design/decisions.md) D16.
 
 1a. **Provider layer first** — `llm/registry.py` wraps `init_chat_model` behind a thin
    `Provider` seam (~20 lines) so LangChain is never load-bearing:
@@ -49,7 +49,7 @@ E "not run." Say so honestly rather than shipping a half-working agent.
    descriptions measurably improve tool triggering.
 
 3. **The loop** — `agent/graph.py`, a LangGraph `StateGraph`
-   ([decisions.md](decisions.md) D16).
+   ([decisions.md](../design/decisions.md) D16).
 
    ```python
    from langgraph.graph import StateGraph, END
@@ -89,7 +89,7 @@ E "not run." Say so honestly rather than shipping a half-working agent.
    the assembled evidence; cite every claim by node id as `[^node_id]`; if the evidence does
    not support a claim, say so rather than filling the gap.
 
-   The model writes **node ids, never URLs** ([conventions.md](conventions.md)). URLs are
+   The model writes **node ids, never URLs** ([coderule.md](../rules/coderule.md)). URLs are
    resolved at render time, which makes a hallucinated link structurally impossible.
 
 5. **Post-check, in code not in the prompt.** Before returning:

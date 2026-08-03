@@ -1633,10 +1633,10 @@ Repeat for `T1059.001` (sub-technique), `M1030` (mitigation), `G0016` (actor), a
 
 - [ ] **Step 4: Record the result in the phase doc**
 
-Update the status line in `.claude/phase-1-attack-ingestion.md` to `verified` and note the ATT&CK version you built against.
+Update the status line in `.claude/phases/phase-1-attack-ingestion.md` to `verified` and note the ATT&CK version you built against.
 
 ```bash
-git add .claude/phase-1-attack-ingestion.md
+git add .claude/phases/phase-1-attack-ingestion.md
 git commit -m "docs(phase-1): record verified ATT&CK version and counts"
 git push origin track-b-stix-parser
 ```
@@ -2715,7 +2715,7 @@ uv run threatlens stats
 
 - [ ] **Step 4: Tick the done-when list**
 
-Update `.claude/phase-1-attack-ingestion.md` and the status row in `.claude/phases.md` to `done`, recording the ATT&CK version and the actual counts.
+Update `.claude/phases/phase-1-attack-ingestion.md` and the status row in `.claude/phases/phases.md` to `done`, recording the ATT&CK version and the actual counts.
 
 ```bash
 git add .claude/

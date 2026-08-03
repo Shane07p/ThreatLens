@@ -14,7 +14,7 @@ uv sync
 
 Dependencies are added with `uv add`, never `pip install`. The spec docs say
 `pip install X --break-system-packages`; that flag exists to override an
-externally-managed system Python and is wrong here — see [decisions.md](decisions.md) D1.
+externally-managed system Python and is wrong here — see [decisions.md](../design/decisions.md) D1.
 
 Phase-by-phase dependency adds:
 
