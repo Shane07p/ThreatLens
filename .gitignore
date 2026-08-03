@@ -16,6 +16,9 @@ wheels/
 CLAUDE.md
 .claude/settings.local.json
 
+# Local working docs — not published
+task-division.md
+
 # Data snapshots — large and reproducible from data/manifest.json.
 # data/eval/ and data/manifest.json are deliberately tracked (see .claude/decisions.md D13).
 data/raw/
