@@ -5,6 +5,34 @@ a rule nobody understands is a rule that gets worked around.
 
 ---
 
+## Simplify first
+
+**Before writing anything, ask whether there is a simpler way to get the same result.**
+Before finishing, ask again — the simpler version is usually only visible once the problem
+is understood, which is after the first attempt, not before.
+
+Questions worth asking every time:
+
+- Does this need to exist at all? The cheapest code is the code not written.
+- Is there a standard-library function or an existing project helper for this?
+- Can these two functions be one? Can this class be a function? Can this function be an
+  expression?
+- Am I handling a case that cannot actually happen? Delete it — speculative error handling
+  is untested code that hides real failures.
+- Am I building for a requirement nobody has asked for? Build the thing asked for.
+- Would someone reading this in six months need the comment, or does the code say it?
+
+**Simple means fewer moving parts, not fewer characters.** A dense one-liner that needs
+three readings is not simpler than four obvious lines. Optimize for the reader.
+
+**Duplication is a signal, not automatically a fault.** Two similar-looking pieces of code
+that change for different reasons should stay separate. Merging them creates a function with
+a boolean parameter that nobody can name, which is worse than the duplication.
+
+**When you notice a simpler approach after the code works, say so rather than silently
+rewriting.** The simplification may cost something — a test, a boundary, a clarity — that
+the person who asked for the work cares about.
+
 ## Language and tooling
 
 Python 3.12, `ruff` for lint and format, line length 100.
