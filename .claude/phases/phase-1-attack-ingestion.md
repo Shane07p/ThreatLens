@@ -15,14 +15,14 @@
    `ingest/attack.py`.
 
 2. **Database up.** `docker compose up -d db`, then `threatlens db init` runs
-   `graph/schema.sql` (see [graph-schema.md](graph-schema.md) for the DDL).
+   `graph/schema.sql` (see [graph-schema.md](../design/graph-schema.md) for the DDL).
 
 3. **Fetch the bundle.** `threatlens fetch attack` →
    `data/raw/enterprise-attack.json`, sha256 + version recorded in `data/manifest.json`.
 
 4. **Parse.** `stix2.MemoryStore().load_from_file(...)`, then branch by `type`.
 
-   Read [graph-schema.md](graph-schema.md) § STIX → graph gotchas **first**. The four that
+   Read [graph-schema.md](../design/graph-schema.md) § STIX → graph gotchas **first**. The four that
    will bite otherwise:
    - ATT&CK ids come from `external_references[source_name == "mitre-attack"].external_id`,
      not off the object.
@@ -82,7 +82,7 @@ the tactic parse worked.
 
 `tests/unit/test_stix_parse.py`, `tests/integration/test_schema.py`,
 `tests/integration/test_upsert_idempotent.py`. Full list in
-[testing.md](testing.md).
+[testing.md](../rules/testing.md).
 
 Build `tests/fixtures/mini-attack-bundle.json` here — ~20 hand-checked objects including
 one revoked, one deprecated, one sub-technique, one technique in two tactics. Every later

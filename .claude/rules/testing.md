@@ -4,6 +4,56 @@ Test-first for ingestion parsers, traversal, and ranking. Those three are where 
 wrongness lives: a parser that drops 15% of edges and a reranker that inverts its sort both
 produce plausible output and a garbage ablation table.
 
+Code and comment rules are in [coderule.md](coderule.md); git, CI, and data rules are in
+[otherrule.md](otherrule.md).
+
+## Rules
+
+**Testing is the priority, not an afterthought.** A parser that silently drops fifteen
+percent of the edges produces a graph that looks entirely reasonable and numbers that are
+worthless. The assertion is what makes a dropped edge a decision rather than an accident.
+
+**Tests come first for parsers and ranking.** Those are the places failure is silent and
+plausible. Structural code — wiring, CLI, rendering — can be tested after.
+
+**Test three layers, not one.** Most suites only ever cover the first:
+
+1. **Correctness** — the right answer on well-formed input.
+2. **Robustness** — malformed, missing, duplicated, self-referential, hostile input. Real
+   data is not clean, and one bad upstream release should not take down an ingest.
+3. **Invariants** — properties that must hold for *any* input. No dangling edges. Ids that
+   round-trip. Parsing that is deterministic across runs.
+
+**Cases worth writing every time:**
+
+- empty input, and input missing a field you assumed was always present
+- duplicates, and two records claiming the same identity
+- unicode, very long values, and text shaped like SQL injection
+- something that should be *ignored*, asserted as distinct from something that was *lost*
+- scale — an input several times larger than production
+- determinism — the same input twice must give byte-identical output
+
+**Name the test after the behavior, not the function.**
+`test_revoked_objects_are_skipped`, not `test_parse_bundle_2`. The name is what a failing
+build shows you first.
+
+**Give a test a docstring when the reason it exists is not obvious from its name** —
+especially a test guarding a bug that already happened once.
+
+**Assert the property, not the incidental value.** Assert ordering, not float scores.
+Assert the shape of a path, not a row count that will drift with the next data release.
+
+**Never touch the network, a database, or model weights in a unit test.** `conftest.py`
+blocks sockets for anything not marked `db` or `eval`. A suite that fails when GitHub is
+slow gets disabled by the team within a week.
+
+**Golden files are generated once and read by a human before being committed.** A golden
+file produced by a buggy parser locks the bug in permanently, and every later phase inherits
+it. Update one deliberately, never to make a red test go green.
+
+**Do not test:** exact LLM wording, exact reranker floats, third-party parsing already
+covered by its own library, or a live external API.
+
 ## Layout
 
 ```
@@ -101,7 +151,7 @@ What it asserts, per provider:
 Providers are skipped individually when their key is absent, so a contributor with one key
 can still run the suite. A provider that cannot hold a tool-calling loop is not supported by
 the agent, however good its prose is — record that outcome in
-[decisions.md](decisions.md) rather than working around it.
+[decisions.md](../design/decisions.md) rather than working around it.
 
 ## Unit tests
 
@@ -123,7 +173,7 @@ Embeddings are stubbed in unit tests — a deterministic fake encoder returning 
 
 What must be covered:
 
-**`test_stix_parse.py`** — the gotchas from [graph-schema.md](graph-schema.md) are each a
+**`test_stix_parse.py`** — the gotchas from [graph-schema.md](../design/graph-schema.md) are each a
 test:
 - ATT&CK id is pulled from `external_references[source_name == "mitre-attack"].external_id`
 - `revoked: true` objects are skipped

@@ -6,7 +6,7 @@
 This is when the project stops being a toy. Protect this phase; cut Phase 6 before cutting
 this.
 
-Protocol and metric definitions are in [evaluation.md](evaluation.md); this doc is the build
+Protocol and metric definitions are in [evaluation.md](../design/evaluation.md); this doc is the build
 order.
 
 ## Steps
@@ -31,7 +31,7 @@ order.
    ```bash
    uv run threatlens eval --all --eval-mode --md
    ```
-   Fill rows A–D in [evaluation.md](evaluation.md). Row E waits for Phase 6.
+   Fill rows A–D in [evaluation.md](../design/evaluation.md). Row E waits for Phase 6.
 
 5. **Read the failures.** Sample 20 queries where config D missed and classify:
    - anchor resolution failed (no entry node found)

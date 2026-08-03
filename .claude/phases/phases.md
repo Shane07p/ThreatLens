@@ -19,7 +19,7 @@ fully checked and its tests pass.
 
 ## What changed from the original 8-week sequence
 
-Five substantive changes. Full reasoning in [decisions.md](decisions.md).
+Five substantive changes. Full reasoning in [decisions.md](../design/decisions.md).
 
 1. **Holdout split moves earlier — into Phase 2, before any retrieval code.** The data guide
    already says this; the spec's week-5 placement conflicts with it. Earlier wins: the split
