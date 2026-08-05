@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from functools import lru_cache
+from pathlib import Path
 
 from dotenv import load_dotenv
 
@@ -15,6 +16,8 @@ class Settings:
     nvd_api_key: str | None = None
     provider: str = "anthropic"
     model: str = "claude-opus-5"
+    data_raw_dir: Path = Path("data/raw")
+    manifest_path: Path = Path("data/manifest.json")
     # retrieval knobs — recorded in eval run metadata so a number stays reproducible
     max_depth: int = 3
     node_budget: int = 200
@@ -33,14 +36,18 @@ def _int_env(name: str, default: int) -> int:
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
     load_dotenv()
-    database_url = os.getenv("DATABASE_URL")
-    if not database_url:
-        raise RuntimeError("DATABASE_URL is not set. Copy .env.example to .env.")
+    database_url = (
+        os.getenv("DATABASE_URL")
+        or os.getenv("THREATLENS_TEST_DSN")
+        or "postgresql://threatlens:threatlens@localhost:5432/threatlens"
+    )
     return Settings(
         database_url=database_url,
         nvd_api_key=os.getenv("NVD_API_KEY") or None,
         provider=os.getenv("THREATLENS_PROVIDER", "anthropic"),
         model=os.getenv("THREATLENS_MODEL", "claude-opus-5"),
+        data_raw_dir=Path(os.getenv("THREATLENS_DATA_RAW", "data/raw")),
+        manifest_path=Path(os.getenv("THREATLENS_MANIFEST", "data/manifest.json")),
         max_depth=_int_env("THREATLENS_MAX_DEPTH", 3),
         node_budget=_int_env("THREATLENS_NODE_BUDGET", 200),
         min_shared_actors=_int_env("THREATLENS_MIN_SHARED_ACTORS", 3),
