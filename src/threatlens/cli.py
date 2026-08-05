@@ -401,8 +401,15 @@ def ingest_attack_cmd() -> None:
         except json.JSONDecodeError:
             sha = ""
 
-    with get_engine().begin() as conn:
-        n_nodes, n_edges = ingest_attack(path, sha, conn)
+    try:
+        with get_engine().begin() as conn:
+            n_nodes, n_edges = ingest_attack(path, sha, conn)
+    except Exception as exc:
+        err_console.print(f"[red]✖ Ingestion failed:[/red] {exc}")
+        err_console.print(
+            "[yellow]Suggestion:[/yellow] Verify database schema with: threatlens db init"
+        )
+        raise typer.Exit(code=1) from exc
 
     console.print(f"[green]✔ Inserted[/green] {n_nodes} nodes, {n_edges} edges")
 
@@ -467,20 +474,31 @@ def show(
     from threatlens.graph.store import get_engine, get_node, neighbors
 
     resolved = node_id if ":" in node_id else _guess_id(node_id)
-    with get_engine().connect() as conn:
-        node = get_node(conn, resolved)
-        if node is None:
-            err_console.print(f"[red]✖ Not found:[/red] {resolved}")
-            err_console.print(
-                "[yellow]Suggestion:[/yellow] Check node ID spelling (e.g. T1190, TA0001, M1030)"
-            )
-            raise typer.Exit(code=1)
+    try:
+        with get_engine().connect() as conn:
+            node = get_node(conn, resolved)
+            if node is None:
+                err_console.print(f"[red]✖ Not found:[/red] {resolved}")
+                err_console.print(
+                    "[yellow]Suggestion:[/yellow] Check node ID (e.g. T1190, TA0001, M1030)"
+                )
+                raise typer.Exit(code=1)
 
-        rows = neighbors(
-            conn,
-            node.id,
-            ["BELONGS_TO", "MITIGATED_BY", "SUBTECHNIQUE_OF", "CHAINS_TO", "USES", "USES_SOFTWARE"],
-        )
+            kinds = [
+                "BELONGS_TO",
+                "MITIGATED_BY",
+                "SUBTECHNIQUE_OF",
+                "CHAINS_TO",
+                "USES",
+                "USES_SOFTWARE",
+            ]
+            rows = neighbors(conn, node.id, kinds)
+    except typer.Exit:
+        raise
+    except Exception as exc:
+        err_console.print(f"[red]✖ Database error:[/red] {exc}")
+        err_console.print("[yellow]Suggestion:[/yellow] Did you mean threatlens db init?")
+        raise typer.Exit(code=1) from exc
 
     if json_output:
         edge_list = [

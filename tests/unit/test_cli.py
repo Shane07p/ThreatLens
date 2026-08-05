@@ -413,3 +413,38 @@ def test_show_command_missing_node(mock_get_engine, mock_get_node):
 def test_verbose_flag():
     result = runner.invoke(app, ["--verbose", "db", "--help"])
     assert result.exit_code == 0
+
+
+def test_ingest_attack_command_database_error(tmp_path, monkeypatch):
+    raw_dir = tmp_path / "data" / "raw"
+    dest = raw_dir / "enterprise-attack.json"
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text("{}")
+
+    monkeypatch.setattr(
+        "threatlens.cli._get_data_paths",
+        lambda: (raw_dir, tmp_path / "manifest.json"),
+    )
+
+    mock_ingest_attack = MagicMock(side_effect=RuntimeError("DB write failure"))
+    fake_module = types.ModuleType("threatlens.ingest.attack")
+    fake_module.ingest_attack = mock_ingest_attack
+    monkeypatch.setitem(sys.modules, "threatlens.ingest.attack", fake_module)
+
+    mock_conn = MagicMock()
+    mock_engine = MagicMock()
+    mock_engine.begin.return_value.__enter__.return_value = mock_conn
+    monkeypatch.setattr("threatlens.graph.store.get_engine", lambda: mock_engine)
+
+    result = runner.invoke(app, ["ingest", "attack"])
+    assert result.exit_code == 1
+    assert "Ingestion failed" in result.output or "threatlens db init" in result.output
+
+
+@patch("threatlens.graph.store.get_engine")
+def test_show_command_database_error(mock_get_engine):
+    mock_get_engine.side_effect = RuntimeError("DB connection error")
+
+    result = runner.invoke(app, ["show", "T1190"])
+    assert result.exit_code == 1
+    assert "Database error" in result.output or "threatlens db init" in result.output
