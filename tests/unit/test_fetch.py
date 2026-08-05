@@ -362,3 +362,37 @@ def test_fetch_url_retry_on_transient_error(tmp_path, monkeypatch):
     assert attempts == 2
     assert dest.read_bytes() == b"success data"
     assert result["bytes"] == len(b"success data")
+
+
+def test_fetch_url_stores_etag_and_last_modified(tmp_path, mock_httpx_stream):
+    """ETag and Last-Modified headers are included in returned metadata if present."""
+    dest = tmp_path / "headers.json"
+    mock_httpx_stream(
+        [b"content"],
+        headers={"etag": '"v123"', "last-modified": "Wed, 21 Oct 2015 07:28:00 GMT"},
+    )
+    result = fetch_url("https://example/x.json", dest)
+
+    assert result["etag"] == '"v123"'
+    assert result["last_modified"] == "Wed, 21 Oct 2015 07:28:00 GMT"
+
+
+def test_fetch_url_fails_after_max_retries(tmp_path, monkeypatch):
+    """Persistent transient errors re-raise after exhausting retry attempts."""
+    dest = tmp_path / "fail.json"
+
+    class FailingStream:
+        def __enter__(self):
+            req = httpx.Request("GET", "https://example/x.json")
+            res = httpx.Response(500, request=req)
+            raise httpx.HTTPStatusError("500 Internal Error", request=req, response=res)
+
+        def __exit__(self, *args):
+            pass
+
+    monkeypatch.setattr("httpx.stream", lambda method, url, **kwargs: FailingStream())
+
+    with pytest.raises(httpx.HTTPStatusError):
+        fetch_url("https://example/x.json", dest)
+
+    assert not dest.exists()
