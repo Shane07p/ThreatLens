@@ -12,12 +12,29 @@ from threatlens.ingest.fetch import _atomic_write_path, fetch_url, sha256_file, 
 
 @pytest.fixture
 def mock_httpx_stream(monkeypatch):
-    """Factory fixture to mock httpx.stream responses with byte chunks or errors."""
+    """Factory fixture to mock httpx.stream responses.
 
-    def _setup(chunks: list[bytes], error: Exception | None = None):
+    Supports byte chunks, status codes, headers, or errors.
+    """
+
+    def _setup(
+        chunks: list[bytes],
+        error: Exception | None = None,
+        status_code: int = 200,
+        headers: dict | None = None,
+    ):
         class DummyResponse:
+            def __init__(self):
+                self.status_code = status_code
+                self.headers = headers or {}
+
             def raise_for_status(self):
-                pass
+                if self.status_code >= 400:
+                    req = httpx.Request("GET", "https://example/x.json")
+                    res = httpx.Response(self.status_code, request=req)
+                    raise httpx.HTTPStatusError(
+                        f"HTTP {self.status_code}", request=req, response=res
+                    )
 
             def iter_bytes(self):
                 yield from chunks
@@ -162,6 +179,9 @@ def test_fetch_url_downloads_file_and_returns_provenance(tmp_path, mock_httpx_st
 
 def test_fetch_url_raises_on_http_error(tmp_path, monkeypatch):
     class DummyErrorResponse:
+        status_code = 404
+        headers = {}
+
         def raise_for_status(self):
             req = httpx.Request("GET", "https://example/x.json")
             res = httpx.Response(404, request=req)
@@ -262,3 +282,83 @@ def test_atomic_write_path_cleans_up_temp_file_if_replace_fails(tmp_path, monkey
 
     assert dest.read_text() == "original content"
     assert _find_temp_files(tmp_path) == []
+
+
+def test_fetch_url_content_length_mismatch_raises_value_error(tmp_path, mock_httpx_stream):
+    """If Content-Length header differs from actual downloaded size, ValueError is raised."""
+    dest = tmp_path / "mismatch.json"
+    mock_httpx_stream([b"data"], headers={"content-length": "100"})
+
+    with pytest.raises(ValueError, match="does not match Content-Length"):
+        fetch_url("https://example/x.json", dest)
+
+    assert not dest.exists()
+
+
+def test_fetch_url_conditional_request_304_not_modified(tmp_path, mock_httpx_stream):
+    """Conditional GET returns 304 Not Modified when remote resource is unchanged."""
+    dest = tmp_path / "cached.json"
+    dest.write_bytes(b"cached payload")
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"cached.json": {"etag": "abc-123"}}))
+
+    mock_httpx_stream([], status_code=304)
+    result = fetch_url("https://example/x.json", dest, manifest_path=manifest)
+
+    assert result["not_modified"] is True
+    assert result["bytes"] == len(b"cached payload")
+
+
+def test_fetch_url_progress_callback_invoked(tmp_path, mock_httpx_stream):
+    """Progress callback is called during download with chunk sizes and total bytes."""
+    dest = tmp_path / "progress.json"
+    mock_httpx_stream([b"chunk1", b"chunk2"], headers={"content-length": "12"})
+
+    calls = []
+
+    def _progress(chunk_size, total):
+        calls.append((chunk_size, total))
+
+    result = fetch_url("https://example/x.json", dest, progress_callback=_progress)
+
+    assert len(calls) == 2
+    assert calls[0] == (6, 12)
+    assert calls[1] == (6, 12)
+    assert result["bytes"] == 12
+
+
+def test_fetch_url_retry_on_transient_error(tmp_path, monkeypatch):
+    """Transient errors trigger retries up to max attempts."""
+    dest = tmp_path / "retry.json"
+    attempts = 0
+
+    class TransientStream:
+        def __enter__(self):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                req = httpx.Request("GET", "https://example/x.json")
+                res = httpx.Response(503, request=req)
+                raise httpx.HTTPStatusError("503 Service Unavailable", request=req, response=res)
+
+            class SuccessResponse:
+                status_code = 200
+                headers = {}
+
+                def raise_for_status(self):
+                    pass
+
+                def iter_bytes(self):
+                    yield b"success data"
+
+            return SuccessResponse()
+
+        def __exit__(self, *args):
+            pass
+
+    monkeypatch.setattr("httpx.stream", lambda method, url, **kwargs: TransientStream())
+    result = fetch_url("https://example/x.json", dest)
+
+    assert attempts == 2
+    assert dest.read_bytes() == b"success data"
+    assert result["bytes"] == len(b"success data")
