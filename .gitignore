@@ -24,3 +24,8 @@ task-division.md
 data/raw/
 !data/eval/
 !data/manifest.json
+
+# PyCharm / IntelliJ IDEA
+.idea/
+*.iml
+out/
