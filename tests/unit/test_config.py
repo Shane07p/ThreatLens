@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from threatlens.config import Settings, get_settings
 
 
@@ -18,4 +20,14 @@ def test_get_settings_env_overrides_data_paths(monkeypatch):
     s = get_settings()
     assert s.data_raw_dir == Path("custom/data/raw")
     assert s.manifest_path == Path("custom/manifest.json")
+    get_settings.cache_clear()
+
+
+def test_get_settings_missing_database_url_raises_runtime_error(monkeypatch):
+    get_settings.cache_clear()
+    monkeypatch.setattr("threatlens.config.load_dotenv", lambda *a, **kw: None)
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+
+    with pytest.raises(RuntimeError, match="DATABASE_URL is not set"):
+        get_settings()
     get_settings.cache_clear()
