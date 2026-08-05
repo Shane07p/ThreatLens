@@ -20,6 +20,17 @@ FIXTURES = os.path.join(os.path.dirname(__file__), "fixtures")
 
 
 @pytest.fixture(autouse=True)
+def _default_test_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Ensure DATABASE_URL is set in unit test environments where .env is absent."""
+    if not os.getenv("DATABASE_URL"):
+        dsn = os.getenv(
+            "THREATLENS_TEST_DSN",
+            "postgresql://threatlens:threatlens@localhost:5432/threatlens_test",
+        )
+        monkeypatch.setenv("DATABASE_URL", dsn)
+
+
+@pytest.fixture(autouse=True)
 def _no_network(monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest) -> None:
     """Block outbound sockets in unit tests.
 

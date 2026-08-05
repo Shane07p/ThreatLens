@@ -36,9 +36,11 @@ def _int_env(name: str, default: int) -> int:
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
     load_dotenv()
-    database_url = os.getenv("DATABASE_URL")
-    if not database_url:
-        raise RuntimeError("DATABASE_URL is not set. Copy .env.example to .env.")
+    database_url = (
+        os.getenv("DATABASE_URL")
+        or os.getenv("THREATLENS_TEST_DSN")
+        or "postgresql://threatlens:threatlens@localhost:5432/threatlens"
+    )
     return Settings(
         database_url=database_url,
         nvd_api_key=os.getenv("NVD_API_KEY") or None,
