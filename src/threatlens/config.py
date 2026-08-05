@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from functools import lru_cache
+from pathlib import Path
 
 from dotenv import load_dotenv
 
@@ -15,6 +16,8 @@ class Settings:
     nvd_api_key: str | None = None
     provider: str = "anthropic"
     model: str = "claude-opus-5"
+    data_raw_dir: Path = Path("data/raw")
+    manifest_path: Path = Path("data/manifest.json")
     # retrieval knobs — recorded in eval run metadata so a number stays reproducible
     max_depth: int = 3
     node_budget: int = 200
@@ -41,6 +44,8 @@ def get_settings() -> Settings:
         nvd_api_key=os.getenv("NVD_API_KEY") or None,
         provider=os.getenv("THREATLENS_PROVIDER", "anthropic"),
         model=os.getenv("THREATLENS_MODEL", "claude-opus-5"),
+        data_raw_dir=Path(os.getenv("THREATLENS_DATA_RAW", "data/raw")),
+        manifest_path=Path(os.getenv("THREATLENS_MANIFEST", "data/manifest.json")),
         max_depth=_int_env("THREATLENS_MAX_DEPTH", 3),
         node_budget=_int_env("THREATLENS_NODE_BUDGET", 200),
         min_shared_actors=_int_env("THREATLENS_MIN_SHARED_ACTORS", 3),
