@@ -1,0 +1,7 @@
+CVE ID,Primary Impact,Secondary Impact,Exploitation Technique,Uncategorized,Phase
+CVE-2021-44228,T1059,T1190,,,Exploitation
+CVE-2021-34527,T1210,,,,Exploitation
+CVE-2020-1472,T1068,T1078,,,Exploitation
+CVE-2019-0708,,T1210,,,Exploitation
+,T1190,,,,Exploitation
+CVE-2024-9999,T9998,,,,Exploitation
