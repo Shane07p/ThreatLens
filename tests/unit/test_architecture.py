@@ -103,11 +103,11 @@ class TestNoHardcodedSecretsInSource:
     """Scan source for patterns that look like accidentally committed secrets."""
 
     SUSPECT_PATTERNS = [
-        "sk-ant-",      # Anthropic API key prefix
-        "sk-proj-",     # OpenAI API key prefix
-        "AKIA",         # AWS access key prefix
-        "ghp_",         # GitHub personal access token
-        "gho_",         # GitHub OAuth token
+        "sk-ant-",  # Anthropic API key prefix
+        "sk-proj-",  # OpenAI API key prefix
+        "AKIA",  # AWS access key prefix
+        "ghp_",  # GitHub personal access token
+        "gho_",  # GitHub OAuth token
     ]
 
     @pytest.mark.parametrize(
