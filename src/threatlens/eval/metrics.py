@@ -1,9 +1,10 @@
 """Retrieval and grounding metrics.
 
-Pure functions — no pipeline, no LLM, no I/O. These land in Phase 2 so that
-the baseline row (A) measured in Phase 3 uses the exact same scoring code as
-rows C–E measured in Phase 5. Measuring row A with throwaway code and comparing
-it to harness output later is not a comparison.
+Pure functions — no pipeline, no LLM, no I/O. They exist before any retrieval
+code so that the naive baseline and the full system are scored by the exact same
+functions. A baseline measured with throwaway code and compared against harness
+output later is not a comparison, and the headline claim rests on that comparison
+being real.
 
 Every function here is deliberately deterministic: the ablation table must be
 reproducible without an API call.
