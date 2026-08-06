@@ -35,9 +35,35 @@ jobs:
       - name: ruff format --check
         run: uv run ruff format --check .
 
-  test:
-    name: Tests (unit + integration)
+  unit-tests:
+    name: Unit tests (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install Python ${{ matrix.python-version }}
+        run: uv python install ${{ matrix.python-version }}
+
+      - name: Sync dependencies
+        run: uv sync --all-groups -p ${{ matrix.python-version }}
+
+      - name: Run unit tests
+        run: uv run pytest tests/unit/ -v --timeout=60 --tb=short
+
+  integration-tests:
+    name: Integration tests
+    runs-on: ubuntu-latest
+    needs: [unit-tests]
 
     services:
       db:
@@ -75,5 +101,26 @@ jobs:
 
       # `eval` tests call the Anthropic API. They are non-deterministic and they
       # cost money, so CI never gates on them — see .claude/testing.md.
-      - name: Run tests
-        run: uv run pytest -m "not eval" --timeout=120
+      - name: Run tests (unit + integration, excluding eval)
+        run: uv run pytest -m "not eval" --timeout=120 -v --tb=short
+
+  # ── Gate ──────────────────────────────────────────────────────────────────
+  # A single check for branch-protection rules to point at, so adding a new
+  # matrix axis or job doesn't require updating repo settings.
+  ci-gate:
+    name: CI Gate
+    if: always()
+    needs: [lint, unit-tests, integration-tests]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Decide pass/fail
+        run: |
+          echo "lint:         ${{ needs.lint.result }}"
+          echo "unit-tests:   ${{ needs.unit-tests.result }}"
+          echo "integration:  ${{ needs.integration-tests.result }}"
+          if [[ "${{ needs.lint.result }}" != "success" ]] || \
+             [[ "${{ needs.unit-tests.result }}" != "success" ]] || \
+             [[ "${{ needs.integration-tests.result }}" != "success" ]]; then
+            echo "::error::One or more required jobs failed."
+            exit 1
+          fi
