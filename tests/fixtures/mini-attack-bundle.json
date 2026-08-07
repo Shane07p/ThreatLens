@@ -1,0 +1,221 @@
+{
+  "type": "bundle",
+  "id": "bundle--test-0001",
+  "objects": [
+    {
+      "type": "x-mitre-collection",
+      "id": "x-mitre-collection--test",
+      "name": "Enterprise ATT&CK",
+      "x_mitre_version": "19.1"
+    },
+    {
+      "type": "x-mitre-tactic",
+      "id": "x-mitre-tactic--ta0001",
+      "name": "Initial Access",
+      "description": "The adversary is trying to get into your network.",
+      "x_mitre_shortname": "initial-access",
+      "external_references": [
+        {
+          "source_name": "mitre-attack",
+          "external_id": "TA0001",
+          "url": "https://attack.mitre.org/tactics/TA0001"
+        }
+      ]
+    },
+    {
+      "type": "x-mitre-tactic",
+      "id": "x-mitre-tactic--ta0002",
+      "name": "Execution",
+      "description": "The adversary is trying to run malicious code.",
+      "x_mitre_shortname": "execution",
+      "external_references": [
+        {
+          "source_name": "mitre-attack",
+          "external_id": "TA0002",
+          "url": "https://attack.mitre.org/tactics/TA0002"
+        }
+      ]
+    },
+    {
+      "type": "attack-pattern",
+      "id": "attack-pattern--t1190",
+      "name": "Exploit Public-Facing Application",
+      "description": "Adversaries may attempt to exploit a weakness in an Internet-facing host.",
+      "x_mitre_is_subtechnique": false,
+      "kill_chain_phases": [
+        {"kill_chain_name": "mitre-attack", "phase_name": "initial-access"}
+      ],
+      "external_references": [
+        {
+          "source_name": "mitre-attack",
+          "external_id": "T1190",
+          "url": "https://attack.mitre.org/techniques/T1190"
+        },
+        {"source_name": "capec", "external_id": "CAPEC-137", "url": "https://capec.mitre.org/"}
+      ]
+    },
+    {
+      "type": "attack-pattern",
+      "id": "attack-pattern--t1059",
+      "name": "Command and Scripting Interpreter",
+      "description": "Adversaries may abuse command and script interpreters.",
+      "x_mitre_is_subtechnique": false,
+      "kill_chain_phases": [
+        {"kill_chain_name": "mitre-attack", "phase_name": "execution"},
+        {"kill_chain_name": "mitre-attack", "phase_name": "initial-access"}
+      ],
+      "external_references": [
+        {
+          "source_name": "mitre-attack",
+          "external_id": "T1059",
+          "url": "https://attack.mitre.org/techniques/T1059"
+        }
+      ]
+    },
+    {
+      "type": "attack-pattern",
+      "id": "attack-pattern--t1059-001",
+      "name": "PowerShell",
+      "description": "Adversaries may abuse PowerShell commands and scripts.",
+      "x_mitre_is_subtechnique": true,
+      "kill_chain_phases": [
+        {"kill_chain_name": "mitre-attack", "phase_name": "execution"}
+      ],
+      "external_references": [
+        {
+          "source_name": "mitre-attack",
+          "external_id": "T1059.001",
+          "url": "https://attack.mitre.org/techniques/T1059/001"
+        }
+      ]
+    },
+    {
+      "type": "attack-pattern",
+      "id": "attack-pattern--revoked",
+      "name": "Revoked Technique",
+      "description": "This technique was revoked.",
+      "revoked": true,
+      "kill_chain_phases": [
+        {"kill_chain_name": "mitre-attack", "phase_name": "execution"}
+      ],
+      "external_references": [
+        {
+          "source_name": "mitre-attack",
+          "external_id": "T9998",
+          "url": "https://attack.mitre.org/techniques/T9998"
+        }
+      ]
+    },
+    {
+      "type": "attack-pattern",
+      "id": "attack-pattern--deprecated",
+      "name": "Deprecated Technique",
+      "description": "This technique was deprecated.",
+      "x_mitre_deprecated": true,
+      "kill_chain_phases": [
+        {"kill_chain_name": "mitre-attack", "phase_name": "execution"}
+      ],
+      "external_references": [
+        {
+          "source_name": "mitre-attack",
+          "external_id": "T9999",
+          "url": "https://attack.mitre.org/techniques/T9999"
+        }
+      ]
+    },
+    {
+      "type": "course-of-action",
+      "id": "course-of-action--m1030",
+      "name": "Network Segmentation",
+      "description": "Architect sections of the network to isolate critical systems.",
+      "external_references": [
+        {
+          "source_name": "mitre-attack",
+          "external_id": "M1030",
+          "url": "https://attack.mitre.org/mitigations/M1030"
+        }
+      ]
+    },
+    {
+      "type": "intrusion-set",
+      "id": "intrusion-set--g0016",
+      "name": "APT29",
+      "description": "APT29 is a threat group attributed to Russia's SVR.",
+      "external_references": [
+        {
+          "source_name": "mitre-attack",
+          "external_id": "G0016",
+          "url": "https://attack.mitre.org/groups/G0016"
+        }
+      ]
+    },
+    {
+      "type": "malware",
+      "id": "malware--s0154",
+      "name": "Cobalt Strike",
+      "description": "Cobalt Strike is a commercial adversary simulation tool.",
+      "external_references": [
+        {
+          "source_name": "mitre-attack",
+          "external_id": "S0154",
+          "url": "https://attack.mitre.org/software/S0154"
+        }
+      ]
+    },
+    {
+      "type": "x-mitre-data-source",
+      "id": "x-mitre-data-source--ignored",
+      "name": "Network Traffic",
+      "description": "An unmapped STIX type that must be ignored without counting as skipped.",
+      "external_references": [
+        {
+          "source_name": "mitre-attack",
+          "external_id": "DS0029",
+          "url": "https://attack.mitre.org/datasources/DS0029"
+        }
+      ]
+    },
+    {
+      "type": "relationship",
+      "id": "relationship--r1",
+      "relationship_type": "mitigates",
+      "source_ref": "course-of-action--m1030",
+      "target_ref": "attack-pattern--t1190"
+    },
+    {
+      "type": "relationship",
+      "id": "relationship--r2",
+      "relationship_type": "uses",
+      "source_ref": "intrusion-set--g0016",
+      "target_ref": "attack-pattern--t1190"
+    },
+    {
+      "type": "relationship",
+      "id": "relationship--r3",
+      "relationship_type": "uses",
+      "source_ref": "intrusion-set--g0016",
+      "target_ref": "malware--s0154"
+    },
+    {
+      "type": "relationship",
+      "id": "relationship--r4",
+      "relationship_type": "subtechnique-of",
+      "source_ref": "attack-pattern--t1059-001",
+      "target_ref": "attack-pattern--t1059"
+    },
+    {
+      "type": "relationship",
+      "id": "relationship--r5",
+      "relationship_type": "uses",
+      "source_ref": "intrusion-set--g0016",
+      "target_ref": "attack-pattern--revoked"
+    },
+    {
+      "type": "relationship",
+      "id": "relationship--r6",
+      "relationship_type": "detects",
+      "source_ref": "x-mitre-data-source--ignored",
+      "target_ref": "attack-pattern--t1190"
+    }
+  ]
+}
