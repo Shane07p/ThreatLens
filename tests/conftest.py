@@ -19,15 +19,24 @@ import pytest
 FIXTURES = os.path.join(os.path.dirname(__file__), "fixtures")
 
 
-@pytest.fixture(autouse=True)
-def _default_test_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Ensure DATABASE_URL is set in unit test environments where .env is absent."""
-    if not os.getenv("DATABASE_URL"):
-        dsn = os.getenv(
-            "THREATLENS_TEST_DSN",
-            "postgresql://threatlens:threatlens@localhost:5432/threatlens_test",
-        )
-        monkeypatch.setenv("DATABASE_URL", dsn)
+@pytest.fixture
+def configured_env(monkeypatch: pytest.MonkeyPatch) -> str:
+    """Set DATABASE_URL for a test that needs get_settings() to succeed.
+
+    Opt-in rather than autouse: an autouse version sets the variable for every test
+    in the suite, which makes the unset case unobservable — no test could then catch
+    a regression where config stops rejecting a missing DATABASE_URL.
+
+    Named `configured_env` rather than `database_url` because a session-scoped
+    `database_url` fixture already exists below and would silently shadow this one.
+    Duplicate fixture names do not error; the later definition simply wins.
+    """
+    dsn = os.getenv(
+        "THREATLENS_TEST_DSN",
+        "postgresql://threatlens:threatlens@localhost:5432/threatlens_test",
+    )
+    monkeypatch.setenv("DATABASE_URL", dsn)
+    return dsn
 
 
 @pytest.fixture(autouse=True)

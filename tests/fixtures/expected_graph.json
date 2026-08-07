@@ -1,0 +1,23 @@
+{
+  "version": "19.1",
+  "nodes": [
+    "actor:G0016|actor|APT29",
+    "mitigation:M1030|mitigation|Network Segmentation",
+    "software:S0154|software|Cobalt Strike",
+    "tactic:TA0001|tactic|Initial Access",
+    "tactic:TA0002|tactic|Execution",
+    "technique:T1059.001|technique|PowerShell",
+    "technique:T1059|technique|Command and Scripting Interpreter",
+    "technique:T1190|technique|Exploit Public-Facing Application"
+  ],
+  "edges": [
+    "actor:G0016|USES_SOFTWARE|software:S0154",
+    "actor:G0016|USES|technique:T1190",
+    "technique:T1059.001|BELONGS_TO|tactic:TA0002",
+    "technique:T1059.001|SUBTECHNIQUE_OF|technique:T1059",
+    "technique:T1059|BELONGS_TO|tactic:TA0001",
+    "technique:T1059|BELONGS_TO|tactic:TA0002",
+    "technique:T1190|BELONGS_TO|tactic:TA0001",
+    "technique:T1190|MITIGATED_BY|mitigation:M1030"
+  ]
+}

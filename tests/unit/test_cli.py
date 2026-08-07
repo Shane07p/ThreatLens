@@ -3,12 +3,22 @@ import sys
 import types
 from unittest.mock import MagicMock, patch
 
+import pytest
 from typer.testing import CliRunner
 
 from threatlens.cli import app
 from threatlens.models import Edge, Node
 
 runner = CliRunner()
+
+
+@pytest.fixture(autouse=True)
+def _cli_needs_settings(configured_env: str) -> None:
+    """Every CLI command loads Settings, so this module opts in to a DATABASE_URL.
+
+    Scoped to this file rather than the whole suite: config's rejection of a missing
+    DATABASE_URL has to stay observable somewhere.
+    """
 
 
 def test_root_help():

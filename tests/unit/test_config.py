@@ -166,7 +166,7 @@ class TestGetSettings:
         """Prevent load_dotenv from reading a real .env file in the repo."""
         monkeypatch.setattr("threatlens.config.load_dotenv", lambda *a, **kw: None)
 
-    # --- DATABASE_URL fallback chain ----------------------------------------
+    # --- DATABASE_URL is required, with no fallback -------------------------
 
     def test_database_url_from_env(self, monkeypatch):
         self._stub_dotenv(monkeypatch)
@@ -174,25 +174,31 @@ class TestGetSettings:
         monkeypatch.delenv("THREATLENS_TEST_DSN", raising=False)
         assert get_settings().database_url == "postgresql://custom/db"
 
-    def test_database_url_falls_back_to_test_dsn(self, monkeypatch):
-        self._stub_dotenv(monkeypatch)
-        monkeypatch.delenv("DATABASE_URL", raising=False)
-        monkeypatch.setenv("THREATLENS_TEST_DSN", "postgresql://test/db")
-        assert get_settings().database_url == "postgresql://test/db"
-
-    def test_database_url_falls_back_to_hardcoded_default(self, monkeypatch):
+    def test_missing_database_url_raises(self, monkeypatch):
+        """No default. A plausible-looking fallback would let the CLI run against a
+        database nobody chose, writing a real graph somewhere unintended."""
         self._stub_dotenv(monkeypatch)
         monkeypatch.delenv("DATABASE_URL", raising=False)
         monkeypatch.delenv("THREATLENS_TEST_DSN", raising=False)
-        url = get_settings().database_url
-        assert "postgresql://threatlens:threatlens@localhost:5432/threatlens" in url
+        with pytest.raises(RuntimeError, match="DATABASE_URL"):
+            get_settings()
 
-    def test_database_url_prefers_DATABASE_URL_over_test_dsn(self, monkeypatch):
-        """When both are set, DATABASE_URL wins — CI sets both."""
+    def test_test_dsn_is_not_used_as_a_fallback(self, monkeypatch):
+        """The sharpest version of the same bug: falling back to THREATLENS_TEST_DSN
+        means `threatlens ingest` writes the production graph into the test database,
+        with no error and no warning. CI and .env.example both set that variable."""
         self._stub_dotenv(monkeypatch)
-        monkeypatch.setenv("DATABASE_URL", "postgresql://prod/db")
+        monkeypatch.delenv("DATABASE_URL", raising=False)
         monkeypatch.setenv("THREATLENS_TEST_DSN", "postgresql://test/db")
-        assert get_settings().database_url == "postgresql://prod/db"
+        with pytest.raises(RuntimeError, match="DATABASE_URL"):
+            get_settings()
+
+    def test_error_message_says_how_to_fix_it(self, monkeypatch):
+        """A config error should tell you the next action, not just what is missing."""
+        self._stub_dotenv(monkeypatch)
+        monkeypatch.delenv("DATABASE_URL", raising=False)
+        with pytest.raises(RuntimeError, match=r"\.env"):
+            get_settings()
 
     # --- NVD API key --------------------------------------------------------
 

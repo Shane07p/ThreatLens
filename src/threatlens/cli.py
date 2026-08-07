@@ -137,12 +137,11 @@ def doctor_cmd(
     db_ok = False
     db_msg = "Connected successfully"
     try:
-        from threatlens.graph.store import get_engine
+        from threatlens.graph.store import get_engine, ping
 
-        engine = get_engine()
-        with engine.connect() as conn:
-            conn.exec_driver_sql("SELECT 1")
-        db_ok = True
+        db_ok = ping(get_engine())
+        if not db_ok:
+            db_msg = "Connection failed"
     except Exception as exc:
         db_msg = f"Connection failed: {exc}"
 

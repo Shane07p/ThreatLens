@@ -35,12 +35,21 @@ def _int_env(name: str, default: int) -> int:
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
+    """Load settings once from the environment.
+
+    Raises RuntimeError when DATABASE_URL is unset. There is deliberately no default:
+    a plausible-looking fallback would let `threatlens ingest` run against a database
+    nobody chose, and falling back to THREATLENS_TEST_DSN specifically would write the
+    production graph into the test database. Both fail silently, which is worse than
+    not starting at all.
+    """
     load_dotenv()
-    database_url = (
-        os.getenv("DATABASE_URL")
-        or os.getenv("THREATLENS_TEST_DSN")
-        or "postgresql://threatlens:threatlens@localhost:5432/threatlens"
-    )
+    database_url = os.getenv("DATABASE_URL")
+    if not database_url:
+        raise RuntimeError(
+            "DATABASE_URL is not set. Copy .env.example to .env and fill it in. "
+            "Tests that need a database set THREATLENS_TEST_DSN instead."
+        )
     return Settings(
         database_url=database_url,
         nvd_api_key=os.getenv("NVD_API_KEY") or None,
