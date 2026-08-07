@@ -29,3 +29,6 @@ data/raw/
 .idea/
 *.iml
 out/
+
+# Local-only compose overrides (per-machine port remaps etc.)
+docker-compose.override.yml

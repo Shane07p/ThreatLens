@@ -52,6 +52,21 @@ def normalize_dsn(url: str) -> str:
     return url
 
 
+def ping(engine: Engine) -> bool:
+    """Is the database reachable? Used by the CLI health check.
+
+    Lives here rather than in the CLI because this file is the only place SQL is
+    allowed — a health check is still a query, and scattering them is how a schema
+    change ends up with more than one home.
+    """
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+        return True
+    except Exception:
+        return False
+
+
 def get_engine(url: str | None = None) -> Engine:
     """Build an Engine. Tests pass a URL explicitly; production reads config."""
     if url is None:
