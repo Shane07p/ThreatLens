@@ -396,3 +396,56 @@ def test_fetch_url_fails_after_max_retries(tmp_path, monkeypatch):
         fetch_url("https://example/x.json", dest)
 
     assert not dest.exists()
+
+
+def test_mappings_url_preserves_url_encoding():
+    """MAPPINGS_URL must keep %26 encoded instead of raw & to avoid 404 response."""
+    from threatlens.ingest.fetch import MAPPINGS_URL
+
+    assert "%26" in MAPPINGS_URL
+    assert "Att%26ckToCveMappings.csv" in MAPPINGS_URL
+    assert "Att&ckToCveMappings.csv" not in MAPPINGS_URL
+
+
+def test_fetch_mappings_snapshot_creates_file_and_manifest_entry(tmp_path, mock_httpx_stream):
+    """fetch_url for MAPPINGS_URL downloads Att&ckToCveMappings.csv and updates manifest."""
+    from threatlens.ingest.fetch import MAPPINGS_URL
+
+    mock_httpx_stream([b"CVE ID,Primary Impact\nCVE-2021-44228,Log4Shell\n"])
+    dest = tmp_path / "Att&ckToCveMappings.csv"
+    manifest = tmp_path / "manifest.json"
+
+    res = fetch_url(MAPPINGS_URL, dest, manifest_path=manifest)
+    data = update_manifest(manifest, dest.name, res)
+
+    assert dest.exists()
+    assert dest.read_bytes() == b"CVE ID,Primary Impact\nCVE-2021-44228,Log4Shell\n"
+    assert res["sha256"] == sha256_file(dest)
+
+    entry = data["Att&ckToCveMappings.csv"]
+    assert entry["url"] == MAPPINGS_URL
+    assert entry["sha256"] == res["sha256"]
+    assert "timestamp" in entry
+    assert "fetched_at" in entry
+
+
+def test_fetch_mappings_partial_download_failure_does_not_corrupt_manifest_or_file(
+    tmp_path, mock_httpx_stream
+):
+    """Failed download stream leaves existing file intact and does not pollute manifest."""
+    dest = tmp_path / "Att&ckToCveMappings.csv"
+    dest.write_bytes(b"existing valid data")
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"Att&ckToCveMappings.csv": {"sha256": "original"}}))
+
+    mock_httpx_stream(
+        [b"corrupted partial"],
+        error=RuntimeError("Connection reset"),
+    )
+
+    with pytest.raises(RuntimeError, match="Connection reset"):
+        fetch_url("https://example/mappings.csv", dest, force=True, manifest_path=manifest)
+
+    assert dest.read_bytes() == b"existing valid data"
+    manifest_data = json.loads(manifest.read_text())
+    assert manifest_data["Att&ckToCveMappings.csv"]["sha256"] == "original"

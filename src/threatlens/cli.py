@@ -265,7 +265,7 @@ def fetch_list_cmd(
 
 
 def _print_fetch_sources(json_output: bool) -> None:
-    from threatlens.ingest.fetch import ATTACK_URL
+    from threatlens.ingest.fetch import ATTACK_URL, MAPPINGS_URL
 
     data_raw, _ = _get_data_paths()
     sources = [
@@ -278,7 +278,7 @@ def _print_fetch_sources(json_output: bool) -> None:
         {
             "name": "mappings",
             "file": str(data_raw / "Att&ckToCveMappings.csv"),
-            "url": "https://raw.githubusercontent.com/.../Att%26ckToCveMappings.csv",
+            "url": MAPPINGS_URL,
             "description": "CVE to ATT&CK Technique KEV mappings dataset",
         },
         {
@@ -339,6 +339,70 @@ def fetch_attack(
 
             entry = fetch_url(
                 ATTACK_URL,
+                dest,
+                force=force,
+                progress_callback=_on_progress,
+                manifest_path=manifest,
+            )
+
+    except FileExistsError as exc:
+        err_console.print(f"[red]✖ Download failed:[/red] {exc}")
+        err_console.print("[yellow]Suggestion:[/yellow] Pass --force to re-download snapshot.")
+        raise typer.Exit(code=1) from exc
+    except Exception as exc:
+        err_console.print(f"[red]✖ Download failed:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    if entry.get("not_modified"):
+        console.print(
+            f"[yellow]✔ Unchanged[/yellow] {dest.name} (HTTP 304 Not Modified) "
+            f"sha256={entry['sha256'][:12]}...",
+            soft_wrap=True,
+        )
+    else:
+        update_manifest(manifest, dest.name, entry)
+        console.print(
+            f"[green]✔ Downloaded[/green] {dest}  sha256={entry['sha256'][:12]}...  "
+            f"{entry['bytes']} bytes",
+            soft_wrap=True,
+        )
+
+
+@fetch_app.command("mappings")
+def fetch_mappings(
+    force: bool = typer.Option(False, "--force", help="Overwrite existing snapshot"),
+) -> None:
+    """Download the CVE to ATT&CK Technique KEV mappings dataset snapshot.
+
+    Fetches the Att&ckToCveMappings.csv dataset, stores it in data/raw/, and records
+    metadata and SHA-256 provenance in data/manifest.json.
+
+    Raises typer.Exit(code=1) if the file exists and --force is not supplied.
+    """
+    from threatlens.ingest.fetch import MAPPINGS_URL, fetch_url, update_manifest
+
+    data_raw, manifest = _get_data_paths()
+    dest = data_raw / "Att&ckToCveMappings.csv"
+
+    try:
+        with Progress(
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            DownloadColumn(),
+            TransferSpeedColumn(),
+            TimeRemainingColumn(),
+            console=console,
+            transient=True,
+        ) as progress:
+            task = progress.add_task("[cyan]Downloading Mappings dataset...", total=None)
+
+            def _on_progress(chunk_size: int, total_bytes: int | None) -> None:
+                if total_bytes and progress.tasks[task].total != total_bytes:
+                    progress.update(task, total=total_bytes)
+                progress.update(task, advance=chunk_size)
+
+            entry = fetch_url(
+                MAPPINGS_URL,
                 dest,
                 force=force,
                 progress_callback=_on_progress,

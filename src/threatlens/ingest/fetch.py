@@ -27,6 +27,11 @@ ATTACK_URL = (
     "master/enterprise-attack/enterprise-attack.json"
 )
 
+MAPPINGS_URL = (
+    "https://raw.githubusercontent.com/center-for-threat-informed-defense/"
+    "attack_to_cve/master/Att%26ckToCveMappings.csv"
+)
+
 HTTP_TIMEOUT = httpx.Timeout(connect=10.0, read=120.0, write=30.0, pool=10.0)
 
 DEFAULT_NVD_RATE_WITH_KEY = 50
@@ -202,7 +207,13 @@ def update_manifest(manifest_path: Path, key: str, entry: dict) -> dict:
     if manifest_path.exists():
         data = json.loads(manifest_path.read_text(encoding="utf-8"))
     existing_entry = data.get(key, {})
-    data[key] = {**existing_entry, **entry, "fetched_at": datetime.now(UTC).isoformat()}
+    iso_now = datetime.now(UTC).isoformat()
+    data[key] = {
+        **existing_entry,
+        **entry,
+        "fetched_at": iso_now,
+        "timestamp": iso_now,
+    }
     content = json.dumps(data, indent=2, sort_keys=True) + "\n"
     with _atomic_write_path(manifest_path) as tmp_path:
         tmp_path.write_text(content, encoding="utf-8")
