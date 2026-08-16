@@ -115,3 +115,99 @@ def test_key_isolation_between_api_keys():
 
     b.acquire(api_key="key-A")
     assert len(c.slept) == 1
+
+
+def test_invalid_init_parameters():
+    """ValueError is raised when rate or per_seconds is zero or negative."""
+    with pytest.raises(ValueError, match="rate must be greater than 0"):
+        TokenBucket(rate=0)
+    with pytest.raises(ValueError, match="rate must be greater than 0"):
+        TokenBucket(rate=-5)
+    with pytest.raises(ValueError, match="per_seconds must be greater than 0"):
+        TokenBucket(per_seconds=0)
+    with pytest.raises(ValueError, match="per_seconds must be greater than 0"):
+        TokenBucket(per_seconds=-10.0)
+
+
+def test_whitespace_api_key_uses_unauthenticated_rate():
+    """Empty or whitespace-only API keys fall back to unauthenticated limit (5)."""
+    c = FakeClock()
+    b = TokenBucket(api_key="   ", clock=c.time, sleep=c.sleep)
+    assert b.get_rate() == 5
+    assert b.get_rate("") == 5
+
+
+def test_instance_default_key_vs_acquire_override():
+    """acquire() uses instance default_api_key when None, or explicit override when passed."""
+    c = FakeClock()
+    b = TokenBucket(api_key="default-key", clock=c.time, sleep=c.sleep)
+    assert b.get_rate() == 50
+    assert b.get_rate("override-key") == 50
+    assert b.get_rate(None) == 50
+
+    b.acquire()
+    assert pytest.approx(b.get_tokens("default-key")) == 49.0
+    assert pytest.approx(b.get_tokens("override-key")) == 50.0
+
+
+def test_fractional_token_refill_and_wait_time():
+    """Exact boundary test: fractional tokens refill proportionally and sleep required deficit."""
+    c = FakeClock()
+    b = TokenBucket(rate=5, per_seconds=30.0, clock=c.time, sleep=c.sleep)
+
+    # Exhaust all 5 tokens
+    for _ in range(5):
+        b.acquire()
+    assert pytest.approx(b.get_tokens()) == 0.0
+
+    # Wait 3 seconds -> 3 / 30 * 5 = 0.5 tokens refilled
+    c.now += 3.0
+    assert pytest.approx(b.get_tokens()) == 0.5
+
+    # Acquiring now requires 0.5 token deficit -> 0.5 * (30 / 5) = 3.0 seconds sleep
+    b.acquire()
+    assert len(c.slept) == 1
+    assert pytest.approx(c.slept[0]) == 3.0
+    assert pytest.approx(b.get_tokens()) == 0.0
+
+
+def test_clock_moving_backwards_handled_gracefully():
+    """Clock jump backwards (NTP drift) does not crash or corrupt token counts."""
+    c = FakeClock()
+    c.now = 100.0
+    b = TokenBucket(rate=5, per_seconds=30.0, clock=c.time, sleep=c.sleep)
+    b.acquire()
+
+    # Move clock back to 50.0
+    c.now = 50.0
+    assert b.get_tokens() >= 0.0
+    b.acquire()
+    assert c.slept == []
+
+
+def test_tokens_capped_at_capacity():
+    """Token accumulation is capped at maximum capacity even after long idle periods."""
+    c = FakeClock()
+    b = TokenBucket(rate=5, per_seconds=30.0, clock=c.time, sleep=c.sleep)
+    c.now += 1000.0
+    assert pytest.approx(b.get_tokens()) == 5.0
+
+
+def test_concurrent_acquires():
+    """Thread safety: concurrent acquires from multiple threads maintain correct counts."""
+    import threading
+
+    c = FakeClock()
+    b = TokenBucket(rate=100, per_seconds=30.0, clock=c.time, sleep=c.sleep)
+
+    threads = []
+    for _ in range(10):
+        t = threading.Thread(target=lambda: [b.acquire() for _ in range(10)])
+        threads.append(t)
+        t.start()
+
+    for t in threads:
+        t.join()
+
+    assert pytest.approx(b.get_tokens()) == 0.0
+    assert c.slept == []

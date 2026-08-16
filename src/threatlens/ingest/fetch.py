@@ -60,6 +60,10 @@ class TokenBucket:
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
     ) -> None:
+        if rate is not None and rate <= 0:
+            raise ValueError("rate must be greater than 0")
+        if per_seconds <= 0:
+            raise ValueError("per_seconds must be greater than 0")
         self.default_rate = rate
         self.per_seconds = per_seconds
         self.default_api_key = api_key
