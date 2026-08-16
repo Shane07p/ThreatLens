@@ -158,6 +158,21 @@ def _should_retry_exception(exc: BaseException) -> bool:
     return False
 
 
+def _should_retry_nvd_exception(exc: BaseException) -> bool:
+    """Determine whether an exception during NVD API fetch is transient and should be retried.
+
+    Retries on transport errors, timeouts, 5xx server errors (e.g. 503 Service Unavailable),
+    and HTTP 403 (NVD rate limit / burst storm response).
+    Unrelated client errors such as 400 Bad Request, 404 Not Found, 401, 422, etc. are NOT retried.
+    """
+    if isinstance(exc, (httpx.TransportError, httpx.TimeoutException)):
+        return True
+    if isinstance(exc, httpx.HTTPStatusError):
+        status = exc.response.status_code
+        return status == 403 or status == 503 or status >= 500
+    return False
+
+
 @contextmanager
 def _atomic_write_path(dest: Path) -> Generator[Path, None, None]:
     """Yield a temporary file path in dest.parent, replacing dest atomically on success.
@@ -450,17 +465,16 @@ def fetch_scoped_nvd(
         total_cves = len(cve_ids)
 
         for idx, cve_id in enumerate(cve_ids, start=1):
-            rate_limiter.acquire(api_key)
-
             url = f"{NVD_ENDPOINT}?cveId={cve_id}"
 
             @retry(
-                retry=retry_if_exception(_should_retry_exception),
+                retry=retry_if_exception(_should_retry_nvd_exception),
                 stop=stop_after_attempt(3),
                 wait=wait_exponential(multiplier=0.1, min=0.1, max=1.0),
                 reraise=True,
             )
             def _fetch_single_cve(req_url: str) -> dict:
+                rate_limiter.acquire(api_key)
                 resp = client.get(req_url, headers=headers)
                 resp.raise_for_status()
                 return resp.json()
@@ -470,7 +484,6 @@ def fetch_scoped_nvd(
 
             total_results = data.get("totalResults", len(vuln_items))
             while len(vuln_items) < total_results:
-                rate_limiter.acquire(api_key)
                 paged_url = f"{NVD_ENDPOINT}?cveId={cve_id}&startIndex={len(vuln_items)}"
                 paged_data = _fetch_single_cve(paged_url)
                 new_items = paged_data.get("vulnerabilities", [])

@@ -681,3 +681,305 @@ def test_fetch_scoped_nvd_failure_preserves_destination_and_manifest(tmp_path):
     assert dest.read_text() == '{"original": "data"}'
     manifest_data = json.loads(manifest.read_text())
     assert manifest_data["nvd-scoped.json"]["sha256"] == "orig-sha"
+
+
+def test_should_retry_nvd_exception_predicate_rules():
+    """_should_retry_nvd_exception retries 403, 503, 5xx, and transport errors; rejects 400, 404."""
+    from threatlens.ingest.fetch import _should_retry_nvd_exception
+
+    req = httpx.Request("GET", "https://services.nvd.nist.gov/rest/json/cves/2.0")
+
+    assert _should_retry_nvd_exception(httpx.TransportError("connection error")) is True
+    assert _should_retry_nvd_exception(httpx.TimeoutException("timeout")) is True
+    res403 = httpx.HTTPStatusError("403", request=req, response=httpx.Response(403))
+    assert _should_retry_nvd_exception(res403) is True
+    res503 = httpx.HTTPStatusError("503", request=req, response=httpx.Response(503))
+    assert _should_retry_nvd_exception(res503) is True
+    res500 = httpx.HTTPStatusError("500", request=req, response=httpx.Response(500))
+    assert _should_retry_nvd_exception(res500) is True
+
+    res400 = httpx.HTTPStatusError("400", request=req, response=httpx.Response(400))
+    assert _should_retry_nvd_exception(res400) is False
+    res404 = httpx.HTTPStatusError("404", request=req, response=httpx.Response(404))
+    assert _should_retry_nvd_exception(res404) is False
+    res401 = httpx.HTTPStatusError("401", request=req, response=httpx.Response(401))
+    assert _should_retry_nvd_exception(res401) is False
+
+
+def test_nvd_retry_403_followed_by_success(tmp_path, monkeypatch):
+    """HTTP 403 triggers a retry which acquires a rate token and succeeds."""
+    from threatlens.ingest.fetch import TokenBucket, fetch_scoped_nvd
+
+    monkeypatch.setattr("tenacity.nap.sleep", lambda s: None)
+
+    mappings_file = tmp_path / "Att&ckToCveMappings.csv"
+    mappings_file.write_text("CVE ID,Primary Impact\nCVE-2021-44228,Log4Shell\n")
+    dest = tmp_path / "nvd-scoped.json"
+
+    attempts = 0
+
+    class Retry403Transport(httpx.BaseTransport):
+        def handle_request(self, request):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                return httpx.Response(403, content=b"Rate limit 403 storm")
+            body = json.dumps(
+                {"totalResults": 1, "vulnerabilities": [{"cve": {"id": "CVE-2021-44228"}}]}
+            ).encode()
+            return httpx.Response(200, content=body)
+
+    client = httpx.Client(transport=Retry403Transport())
+
+    class TrackedLimiter(TokenBucket):
+        def __init__(self):
+            super().__init__()
+            self.acquire_count = 0
+
+        def acquire(self, api_key=None):
+            self.acquire_count += 1
+            super().acquire(api_key)
+
+    tb = TrackedLimiter()
+
+    res = fetch_scoped_nvd(
+        dest=dest,
+        mappings_path=mappings_file,
+        client=client,
+        rate_limiter=tb,
+        kev_data={"vulnerabilities": []},
+    )
+
+    assert attempts == 2
+    assert tb.acquire_count == 2
+    assert res["fetched_cve_count"] == 1
+
+
+def test_nvd_retry_503_followed_by_success(tmp_path, monkeypatch):
+    """HTTP 503 Service Unavailable triggers a retry and succeeds."""
+    from threatlens.ingest.fetch import TokenBucket, fetch_scoped_nvd
+
+    monkeypatch.setattr("tenacity.nap.sleep", lambda s: None)
+
+    mappings_file = tmp_path / "Att&ckToCveMappings.csv"
+    mappings_file.write_text("CVE ID,Primary Impact\nCVE-2021-44228,Log4Shell\n")
+    dest = tmp_path / "nvd-scoped.json"
+
+    attempts = 0
+
+    class Retry503Transport(httpx.BaseTransport):
+        def handle_request(self, request):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                return httpx.Response(503, content=b"Service Unavailable")
+            body = json.dumps(
+                {"totalResults": 1, "vulnerabilities": [{"cve": {"id": "CVE-2021-44228"}}]}
+            ).encode()
+            return httpx.Response(200, content=body)
+
+    client = httpx.Client(transport=Retry503Transport())
+
+    res = fetch_scoped_nvd(
+        dest=dest,
+        mappings_path=mappings_file,
+        client=client,
+        rate_limiter=TokenBucket(),
+        kev_data={"vulnerabilities": []},
+    )
+
+    assert attempts == 2
+    assert res["fetched_cve_count"] == 1
+
+
+def test_nvd_retry_multiple_transient_failures_then_success(tmp_path, monkeypatch):
+    """Multiple transient errors (503 then 403) are retried up to max attempts."""
+    from threatlens.ingest.fetch import TokenBucket, fetch_scoped_nvd
+
+    monkeypatch.setattr("tenacity.nap.sleep", lambda s: None)
+
+    mappings_file = tmp_path / "Att&ckToCveMappings.csv"
+    mappings_file.write_text("CVE ID,Primary Impact\nCVE-2021-44228,Log4Shell\n")
+    dest = tmp_path / "nvd-scoped.json"
+
+    attempts = 0
+
+    class MultiFailTransport(httpx.BaseTransport):
+        def handle_request(self, request):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                return httpx.Response(503, content=b"Service Unavailable")
+            if attempts == 2:
+                return httpx.Response(403, content=b"Forbidden")
+            body = json.dumps(
+                {"totalResults": 1, "vulnerabilities": [{"cve": {"id": "CVE-2021-44228"}}]}
+            ).encode()
+            return httpx.Response(200, content=body)
+
+    client = httpx.Client(transport=MultiFailTransport())
+
+    res = fetch_scoped_nvd(
+        dest=dest,
+        mappings_path=mappings_file,
+        client=client,
+        rate_limiter=TokenBucket(),
+        kev_data={"vulnerabilities": []},
+    )
+
+    assert attempts == 3
+    assert res["fetched_cve_count"] == 1
+
+
+def test_nvd_retry_max_attempts_exhausted_reraises_exception(tmp_path, monkeypatch):
+    """Persistent 503 failures stop after max attempts (3) and reraise exception."""
+    from threatlens.ingest.fetch import TokenBucket, fetch_scoped_nvd
+
+    monkeypatch.setattr("tenacity.nap.sleep", lambda s: None)
+
+    mappings_file = tmp_path / "Att&ckToCveMappings.csv"
+    mappings_file.write_text("CVE ID,Primary Impact\nCVE-2021-44228,Log4Shell\n")
+    dest = tmp_path / "nvd-scoped.json"
+
+    attempts = 0
+
+    class PersistentFailTransport(httpx.BaseTransport):
+        def handle_request(self, request):
+            nonlocal attempts
+            attempts += 1
+            return httpx.Response(503, content=b"Persistent Unavailable")
+
+    client = httpx.Client(transport=PersistentFailTransport())
+
+    with pytest.raises(httpx.HTTPStatusError) as exc_info:
+        fetch_scoped_nvd(
+            dest=dest,
+            mappings_path=mappings_file,
+            client=client,
+            rate_limiter=TokenBucket(),
+            kev_data={"vulnerabilities": []},
+        )
+
+    assert exc_info.value.response.status_code == 503
+    assert attempts == 3
+    assert not dest.exists()
+
+
+def test_nvd_non_retryable_400_fails_immediately_without_retry(tmp_path, monkeypatch):
+    """HTTP 400 Bad Request is non-retryable and fails on attempt 1."""
+    from threatlens.ingest.fetch import TokenBucket, fetch_scoped_nvd
+
+    monkeypatch.setattr("tenacity.nap.sleep", lambda s: None)
+
+    mappings_file = tmp_path / "Att&ckToCveMappings.csv"
+    mappings_file.write_text("CVE ID,Primary Impact\nCVE-2021-44228,Log4Shell\n")
+    dest = tmp_path / "nvd-scoped.json"
+
+    attempts = 0
+
+    class Fail400Transport(httpx.BaseTransport):
+        def handle_request(self, request):
+            nonlocal attempts
+            attempts += 1
+            return httpx.Response(400, content=b"Bad Request")
+
+    client = httpx.Client(transport=Fail400Transport())
+
+    with pytest.raises(httpx.HTTPStatusError) as exc_info:
+        fetch_scoped_nvd(
+            dest=dest,
+            mappings_path=mappings_file,
+            client=client,
+            rate_limiter=TokenBucket(),
+            kev_data={"vulnerabilities": []},
+        )
+
+    assert exc_info.value.response.status_code == 400
+    assert attempts == 1
+
+
+def test_nvd_non_retryable_404_fails_immediately_without_retry(tmp_path, monkeypatch):
+    """HTTP 404 Not Found is non-retryable and fails on attempt 1."""
+    from threatlens.ingest.fetch import TokenBucket, fetch_scoped_nvd
+
+    monkeypatch.setattr("tenacity.nap.sleep", lambda s: None)
+
+    mappings_file = tmp_path / "Att&ckToCveMappings.csv"
+    mappings_file.write_text("CVE ID,Primary Impact\nCVE-2021-44228,Log4Shell\n")
+    dest = tmp_path / "nvd-scoped.json"
+
+    attempts = 0
+
+    class Fail404Transport(httpx.BaseTransport):
+        def handle_request(self, request):
+            nonlocal attempts
+            attempts += 1
+            return httpx.Response(404, content=b"Not Found")
+
+    client = httpx.Client(transport=Fail404Transport())
+
+    with pytest.raises(httpx.HTTPStatusError) as exc_info:
+        fetch_scoped_nvd(
+            dest=dest,
+            mappings_path=mappings_file,
+            client=client,
+            rate_limiter=TokenBucket(),
+            kev_data={"vulnerabilities": []},
+        )
+
+    assert exc_info.value.response.status_code == 404
+    assert attempts == 1
+
+
+def test_retries_respect_rate_limiter_and_fake_clock(tmp_path, monkeypatch):
+    """Retries invoke rate_limiter.acquire, triggering clock sleep if rate budget is exhausted."""
+    from threatlens.ingest.fetch import TokenBucket, fetch_scoped_nvd
+
+    monkeypatch.setattr("tenacity.nap.sleep", lambda s: None)
+
+    mappings_file = tmp_path / "Att&ckToCveMappings.csv"
+    mappings_file.write_text("CVE ID,Primary Impact\nCVE-2021-44228,Log4Shell\n")
+    dest = tmp_path / "nvd-scoped.json"
+
+    attempts = 0
+
+    class Transport403Then200(httpx.BaseTransport):
+        def handle_request(self, request):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                return httpx.Response(403, content=b"Rate limit 403")
+            body = json.dumps(
+                {"totalResults": 1, "vulnerabilities": [{"cve": {"id": "CVE-2021-44228"}}]}
+            ).encode()
+            return httpx.Response(200, content=body)
+
+    client = httpx.Client(transport=Transport403Then200())
+
+    class FakeClock:
+        def __init__(self):
+            self.now = 0.0
+            self.slept = []
+
+        def time(self):
+            return self.now
+
+        def sleep(self, s):
+            self.slept.append(s)
+            self.now += s
+
+    c = FakeClock()
+    tb = TokenBucket(rate=1, per_seconds=10.0, clock=c.time, sleep=c.sleep)
+
+    res = fetch_scoped_nvd(
+        dest=dest,
+        mappings_path=mappings_file,
+        client=client,
+        rate_limiter=tb,
+        kev_data={"vulnerabilities": []},
+    )
+
+    assert attempts == 2
+    assert len(c.slept) == 1
+    assert c.slept[0] == 10.0
+    assert res["fetched_cve_count"] == 1
