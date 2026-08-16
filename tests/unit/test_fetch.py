@@ -449,3 +449,235 @@ def test_fetch_mappings_partial_download_failure_does_not_corrupt_manifest_or_fi
     assert dest.read_bytes() == b"existing valid data"
     manifest_data = json.loads(manifest.read_text())
     assert manifest_data["Att&ckToCveMappings.csv"]["sha256"] == "original"
+
+
+def test_collect_scoped_cve_ids_union_and_deduplication(tmp_path):
+    """collect_scoped_cve_ids combines mappings CSV and KEV catalog, deduplicating IDs."""
+    from threatlens.ingest.fetch import collect_scoped_cve_ids
+
+    mappings_file = tmp_path / "Att&ckToCveMappings.csv"
+    mappings_file.write_text(
+        "CVE ID,Primary Impact\n"
+        "CVE-2021-44228,Log4Shell\n"
+        "CVE-2021-44228,DuplicateLog4j\n"
+        "CVE-2022-22965,Spring4Shell\n"
+    )
+
+    kev_data = {
+        "vulnerabilities": [
+            {"cveID": "CVE-2021-44228"},
+            {"cveID": "cve-2023-23397"},
+        ]
+    }
+
+    valid_ids, invalid_ids = collect_scoped_cve_ids(mappings_path=mappings_file, kev_data=kev_data)
+    assert valid_ids == ["CVE-2021-44228", "CVE-2022-22965", "CVE-2023-23397"]
+    assert invalid_ids == []
+
+
+def test_collect_scoped_cve_ids_handles_invalid_cves(tmp_path):
+    """Malformed or invalid CVE ID formats are separated into invalid_ids."""
+    from threatlens.ingest.fetch import collect_scoped_cve_ids
+
+    mappings_file = tmp_path / "Att&ckToCveMappings.csv"
+    mappings_file.write_text(
+        "CVE ID,Primary Impact\nCVE-2021-44228,Valid\nINVALID-ID,Bad\nN/A,Bad\n"
+    )
+
+    kev_data = {"vulnerabilities": [{"cveID": "CVE-INVALID-FORMAT"}]}
+
+    valid_ids, invalid_ids = collect_scoped_cve_ids(mappings_path=mappings_file, kev_data=kev_data)
+    assert valid_ids == ["CVE-2021-44228"]
+    assert set(invalid_ids) == {"INVALID-ID", "N/A", "CVE-INVALID-FORMAT"}
+
+
+def test_collect_scoped_cve_ids_missing_mappings_file_raises_error(tmp_path):
+    """Missing mappings file raises FileNotFoundError."""
+    from threatlens.ingest.fetch import collect_scoped_cve_ids
+
+    missing_file = tmp_path / "nonexistent.csv"
+    with pytest.raises(FileNotFoundError, match="Mappings file not found"):
+        collect_scoped_cve_ids(mappings_path=missing_file, kev_data={})
+
+
+def test_fetch_scoped_nvd_success_and_parse_compatibility(tmp_path):
+    """fetch_scoped_nvd queries NVD 2.0 API, writes snapshot, and produces valid Nodes."""
+    from threatlens.ingest.fetch import TokenBucket, fetch_scoped_nvd
+    from threatlens.ingest.nvd import parse_cve_record
+
+    mappings_file = tmp_path / "Att&ckToCveMappings.csv"
+    mappings_file.write_text("CVE ID,Primary Impact\nCVE-2021-44228,Log4Shell\n")
+    dest = tmp_path / "nvd-scoped.json"
+    manifest = tmp_path / "manifest.json"
+
+    kev_data = {"vulnerabilities": []}
+
+    class MockTransport(httpx.BaseTransport):
+        def handle_request(self, request):
+            url_str = str(request.url)
+            assert "cveId=CVE-2021-44228" in url_str
+            body = json.dumps(
+                {
+                    "totalResults": 1,
+                    "vulnerabilities": [
+                        {
+                            "cve": {
+                                "id": "CVE-2021-44228",
+                                "descriptions": [{"lang": "en", "value": "Log4j2 vuln"}],
+                                "metrics": {
+                                    "cvssMetricV31": [
+                                        {
+                                            "cvssData": {
+                                                "baseScore": 10.0,
+                                                "vectorString": "CVSS:3.1/AV:N",
+                                            }
+                                        }
+                                    ]
+                                },
+                            }
+                        }
+                    ],
+                }
+            ).encode()
+            return httpx.Response(200, content=body)
+
+    client = httpx.Client(transport=MockTransport())
+    tb = TokenBucket(api_key="test-api-key")
+
+    res = fetch_scoped_nvd(
+        dest=dest,
+        mappings_path=mappings_file,
+        manifest_path=manifest,
+        api_key="test-api-key",
+        client=client,
+        rate_limiter=tb,
+        kev_data=kev_data,
+    )
+
+    assert dest.exists()
+    assert res["requested_cve_count"] == 1
+    assert res["fetched_cve_count"] == 1
+    assert res["missing_cve_count"] == 0
+    assert "timestamp" in json.loads(manifest.read_text())["nvd-scoped.json"]
+
+    snapshot_raw = json.loads(dest.read_text(encoding="utf-8"))
+    nodes = [parse_cve_record(v["cve"]) for v in snapshot_raw["vulnerabilities"]]
+    assert len(nodes) == 1
+    assert nodes[0].id == "cve:CVE-2021-44228"
+    assert nodes[0].attrs["cvss_score"] == 10.0
+
+
+def test_fetch_scoped_nvd_pagination_support(tmp_path):
+    """Paginates using startIndex if NVD totalResults > len(vulnerabilities)."""
+    from threatlens.ingest.fetch import TokenBucket, fetch_scoped_nvd
+
+    mappings_file = tmp_path / "Att&ckToCveMappings.csv"
+    mappings_file.write_text("CVE ID,Primary Impact\nCVE-2021-44228,Log4Shell\n")
+    dest = tmp_path / "nvd-scoped.json"
+
+    class PagedTransport(httpx.BaseTransport):
+        def handle_request(self, request):
+            url_str = str(request.url)
+            if "startIndex=1" in url_str:
+                body = json.dumps(
+                    {
+                        "totalResults": 2,
+                        "vulnerabilities": [{"cve": {"id": "CVE-2021-44228", "page": 2}}],
+                    }
+                ).encode()
+            else:
+                body = json.dumps(
+                    {
+                        "totalResults": 2,
+                        "vulnerabilities": [{"cve": {"id": "CVE-2021-44228", "page": 1}}],
+                    }
+                ).encode()
+            return httpx.Response(200, content=body)
+
+    client = httpx.Client(transport=PagedTransport())
+    tb = TokenBucket(api_key="test-key")
+
+    res = fetch_scoped_nvd(
+        dest=dest,
+        mappings_path=mappings_file,
+        client=client,
+        rate_limiter=tb,
+        kev_data={"vulnerabilities": []},
+    )
+
+    assert res["fetched_cve_count"] == 2
+
+
+def test_fetch_scoped_nvd_missing_cve_record_handled(tmp_path):
+    """CVE record absent from NVD is recorded as missing without creating fake records."""
+    from threatlens.ingest.fetch import TokenBucket, fetch_scoped_nvd
+
+    mappings_file = tmp_path / "Att&ckToCveMappings.csv"
+    mappings_file.write_text("CVE ID,Primary Impact\nCVE-9999-0000,NonExistent\n")
+    dest = tmp_path / "nvd-scoped.json"
+
+    class EmptyTransport(httpx.BaseTransport):
+        def handle_request(self, request):
+            body = json.dumps({"totalResults": 0, "vulnerabilities": []}).encode()
+            return httpx.Response(200, content=body)
+
+    client = httpx.Client(transport=EmptyTransport())
+
+    res = fetch_scoped_nvd(
+        dest=dest,
+        mappings_path=mappings_file,
+        client=client,
+        rate_limiter=TokenBucket(),
+        kev_data={"vulnerabilities": []},
+    )
+
+    assert res["requested_cve_count"] == 1
+    assert res["fetched_cve_count"] == 0
+    assert res["missing_cve_count"] == 1
+    snapshot_raw = json.loads(dest.read_text())
+    assert snapshot_raw["vulnerabilities"] == []
+
+
+def test_fetch_scoped_nvd_refuses_overwrite_without_force(tmp_path):
+    """FileExistsError raised if nvd-scoped.json exists and force is False."""
+    from threatlens.ingest.fetch import fetch_scoped_nvd
+
+    dest = tmp_path / "nvd-scoped.json"
+    dest.write_text("{}")
+    mappings_file = tmp_path / "Att&ckToCveMappings.csv"
+    mappings_file.write_text("CVE ID,Primary Impact\nCVE-2021-44228,Log4Shell\n")
+
+    with pytest.raises(FileExistsError, match="--force"):
+        fetch_scoped_nvd(dest, mappings_file, force=False, kev_data={"vulnerabilities": []})
+
+
+def test_fetch_scoped_nvd_failure_preserves_destination_and_manifest(tmp_path):
+    """Network failure mid-download preserves existing snapshot and leaves manifest unpolluted."""
+    from threatlens.ingest.fetch import fetch_scoped_nvd
+
+    dest = tmp_path / "nvd-scoped.json"
+    dest.write_text('{"original": "data"}')
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"nvd-scoped.json": {"sha256": "orig-sha"}}))
+    mappings_file = tmp_path / "Att&ckToCveMappings.csv"
+    mappings_file.write_text("CVE ID,Primary Impact\nCVE-2021-44228,Log4Shell\n")
+
+    class FailingTransport(httpx.BaseTransport):
+        def handle_request(self, request):
+            return httpx.Response(500, content=b"Server error")
+
+    client = httpx.Client(transport=FailingTransport())
+
+    with pytest.raises(httpx.HTTPStatusError):
+        fetch_scoped_nvd(
+            dest=dest,
+            mappings_path=mappings_file,
+            force=True,
+            manifest_path=manifest,
+            client=client,
+            kev_data={"vulnerabilities": []},
+        )
+
+    assert dest.read_text() == '{"original": "data"}'
+    manifest_data = json.loads(manifest.read_text())
+    assert manifest_data["nvd-scoped.json"]["sha256"] == "orig-sha"

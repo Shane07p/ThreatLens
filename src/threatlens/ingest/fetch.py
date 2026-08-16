@@ -6,9 +6,11 @@ reproducible results across evaluations.
 
 from __future__ import annotations
 
+import csv
 import hashlib
 import json
 import logging
+import re
 import tempfile
 import threading
 import time
@@ -31,6 +33,11 @@ MAPPINGS_URL = (
     "https://raw.githubusercontent.com/center-for-threat-informed-defense/"
     "attack_to_cve/master/Att%26ckToCveMappings.csv"
 )
+
+CISA_KEV_URL = "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json"
+NVD_ENDPOINT = "https://services.nvd.nist.gov/rest/json/cves/2.0"
+CVE_ID_PATTERN = re.compile(r"^CVE-\d{4}-\d{4,}$", re.IGNORECASE)
+
 
 HTTP_TIMEOUT = httpx.Timeout(connect=10.0, read=120.0, write=30.0, pool=10.0)
 
@@ -310,3 +317,198 @@ def fetch_url(
             return res
 
     return _do_fetch()
+
+
+def collect_scoped_cve_ids(
+    mappings_path: Path | None = None,
+    kev_url: str = CISA_KEV_URL,
+    client: httpx.Client | None = None,
+    kev_data: dict | None = None,
+) -> tuple[list[str], list[str]]:
+    """Extract and deduplicate valid CVE IDs from mappings CSV and CISA KEV catalog.
+
+    Args:
+        mappings_path: Path to local Att&ckToCveMappings.csv file.
+        kev_url: Remote URL for CISA KEV JSON catalog feed.
+        client: Optional httpx.Client for fetching KEV feed.
+        kev_data: Optional pre-parsed KEV catalog dictionary (for testing).
+
+    Returns:
+        (valid_cve_ids, invalid_raw_cve_ids) where valid_cve_ids is a sorted, unique
+        list of upper-case CVE IDs (e.g. ['CVE-2021-44228']).
+
+    Raises:
+        FileNotFoundError: If mappings_path is specified but does not exist.
+    """
+    valid_cves: set[str] = set()
+    invalid_cves: set[str] = set()
+
+    if mappings_path is not None:
+        if not mappings_path.exists():
+            raise FileNotFoundError(f"Mappings file not found at {mappings_path}")
+        with open(mappings_path, newline="", encoding="utf-8") as fh:
+            reader = csv.DictReader(fh)
+            for row in reader:
+                raw_id = (row.get("CVE ID") or "").strip().upper()
+                if not raw_id:
+                    continue
+                if CVE_ID_PATTERN.match(raw_id):
+                    valid_cves.add(raw_id)
+                else:
+                    invalid_cves.add(raw_id)
+
+    if kev_data is None:
+        close_client = False
+        if client is None:
+            client = httpx.Client(timeout=HTTP_TIMEOUT, follow_redirects=True)
+            close_client = True
+        try:
+            resp = client.get(kev_url)
+            resp.raise_for_status()
+            kev_data = resp.json()
+        finally:
+            if close_client and client is not None:
+                client.close()
+
+    if kev_data and isinstance(kev_data, dict):
+        vulnerabilities = kev_data.get("vulnerabilities", [])
+        for item in vulnerabilities:
+            raw_id = (item.get("cveID") or "").strip().upper()
+            if not raw_id:
+                continue
+            if CVE_ID_PATTERN.match(raw_id):
+                valid_cves.add(raw_id)
+            else:
+                invalid_cves.add(raw_id)
+
+    return sorted(list(valid_cves)), sorted(list(invalid_cves))
+
+
+def fetch_scoped_nvd(
+    dest: Path,
+    mappings_path: Path,
+    force: bool = False,
+    manifest_path: Path | None = None,
+    api_key: str | None = None,
+    kev_url: str = CISA_KEV_URL,
+    client: httpx.Client | None = None,
+    rate_limiter: TokenBucket | None = None,
+    progress_callback: Callable[[int, int], None] | None = None,
+    kev_data: dict | None = None,
+) -> dict:
+    """Perform a scoped download of NVD CVE records for mapped and KEV CVEs.
+
+    Collects target CVE IDs from the mappings snapshot and CISA KEV catalog, queries
+    the NVD 2.0 API rate-limited per API key via TokenBucket, and atomically writes the
+    resulting snapshot to dest. Updates manifest metadata if manifest_path is provided.
+
+    Args:
+        dest: Destination path for nvd-scoped.json.
+        mappings_path: Path to local Att&ckToCveMappings.csv file.
+        force: Overwrite dest if it already exists.
+        manifest_path: Path to data/manifest.json.
+        api_key: Optional NVD API key string.
+        kev_url: CISA KEV JSON catalog endpoint.
+        client: Optional httpx.Client for network requests.
+        rate_limiter: Optional TokenBucket instance for rate limiting.
+        progress_callback: Callback(processed_count, total_count) for progress reporting.
+        kev_data: Optional pre-parsed KEV dictionary for unit tests.
+
+    Returns:
+        Dict with url, sha256, bytes, requested_cve_count, fetched_cve_count, missing_cve_count.
+
+    Raises:
+        FileExistsError: If dest exists and force is False.
+        FileNotFoundError: If mappings_path does not exist.
+        httpx.HTTPStatusError: On non-retryable NVD API HTTP errors.
+    """
+    if dest.exists() and not force:
+        raise FileExistsError(f"{dest} already exists; pass --force to re-download")
+
+    close_client = False
+    if client is None:
+        client = httpx.Client(timeout=HTTP_TIMEOUT, follow_redirects=True)
+        close_client = True
+
+    try:
+        cve_ids, _invalid_ids = collect_scoped_cve_ids(
+            mappings_path=mappings_path,
+            kev_url=kev_url,
+            client=client,
+            kev_data=kev_data,
+        )
+
+        if rate_limiter is None:
+            rate_limiter = TokenBucket(api_key=api_key)
+
+        headers: dict[str, str] = {}
+        if api_key and isinstance(api_key, str) and api_key.strip():
+            headers["apiKey"] = api_key.strip()
+
+        fetched_vulnerabilities: list[dict] = []
+        missing_cve_ids: list[str] = []
+        total_cves = len(cve_ids)
+
+        for idx, cve_id in enumerate(cve_ids, start=1):
+            rate_limiter.acquire(api_key)
+
+            url = f"{NVD_ENDPOINT}?cveId={cve_id}"
+
+            @retry(
+                retry=retry_if_exception(_should_retry_exception),
+                stop=stop_after_attempt(3),
+                wait=wait_exponential(multiplier=0.1, min=0.1, max=1.0),
+                reraise=True,
+            )
+            def _fetch_single_cve(req_url: str) -> dict:
+                resp = client.get(req_url, headers=headers)
+                resp.raise_for_status()
+                return resp.json()
+
+            data = _fetch_single_cve(url)
+            vuln_items = data.get("vulnerabilities", [])
+
+            total_results = data.get("totalResults", len(vuln_items))
+            while len(vuln_items) < total_results:
+                rate_limiter.acquire(api_key)
+                paged_url = f"{NVD_ENDPOINT}?cveId={cve_id}&startIndex={len(vuln_items)}"
+                paged_data = _fetch_single_cve(paged_url)
+                new_items = paged_data.get("vulnerabilities", [])
+                if not new_items:
+                    break
+                vuln_items.extend(new_items)
+
+            if not vuln_items:
+                missing_cve_ids.append(cve_id)
+            else:
+                fetched_vulnerabilities.extend(vuln_items)
+
+            if progress_callback:
+                progress_callback(idx, total_cves)
+
+        snapshot_content = {
+            "format": "NVD_CVE",
+            "version": "2.0",
+            "vulnerabilities": fetched_vulnerabilities,
+        }
+
+        with _atomic_write_path(dest) as tmp_p:
+            tmp_p.write_text(json.dumps(snapshot_content, indent=2) + "\n", encoding="utf-8")
+
+        res_entry = {
+            "url": NVD_ENDPOINT,
+            "sha256": sha256_file(dest),
+            "bytes": dest.stat().st_size,
+            "requested_cve_count": total_cves,
+            "fetched_cve_count": len(fetched_vulnerabilities),
+            "missing_cve_count": len(missing_cve_ids),
+        }
+
+        if manifest_path:
+            update_manifest(manifest_path, dest.name, res_entry)
+
+        return res_entry
+
+    finally:
+        if close_client and client is not None:
+            client.close()

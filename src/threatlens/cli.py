@@ -432,6 +432,72 @@ def fetch_mappings(
         )
 
 
+@fetch_app.command("nvd")
+def fetch_nvd_cmd(
+    force: bool = typer.Option(False, "--force", help="Overwrite existing snapshot"),
+) -> None:
+    """Perform a scoped download of NVD CVE records for mapped and KEV CVEs.
+
+    Collects CVE IDs from the mappings snapshot (data/raw/Att&ckToCveMappings.csv) and
+    the CISA KEV catalog feed, queries NVD 2.0 API rate-limited per API key via TokenBucket,
+    and atomically stores data/raw/nvd-scoped.json and data/manifest.json.
+
+    Raises typer.Exit(code=1) if mappings snapshot is missing or download fails.
+    """
+    from threatlens.config import get_settings
+    from threatlens.ingest.fetch import fetch_scoped_nvd
+
+    data_raw, manifest = _get_data_paths()
+    mappings_dest = data_raw / "Att&ckToCveMappings.csv"
+    dest = data_raw / "nvd-scoped.json"
+    settings = get_settings()
+
+    if not mappings_dest.exists():
+        err_console.print(f"[red]✖ Mappings snapshot missing at {mappings_dest}[/red]")
+        err_console.print("[yellow]Suggestion:[/yellow] Run: threatlens fetch mappings")
+        raise typer.Exit(code=1)
+
+    try:
+        with Progress(
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+            TimeRemainingColumn(),
+            console=console,
+            transient=True,
+        ) as progress:
+            task = progress.add_task("[cyan]Fetching scoped NVD CVEs...", total=None)
+
+            def _on_progress(processed: int, total: int) -> None:
+                if total > 0 and progress.tasks[task].total != total:
+                    progress.update(task, total=total)
+                progress.update(task, completed=processed)
+
+            res = fetch_scoped_nvd(
+                dest=dest,
+                mappings_path=mappings_dest,
+                force=force,
+                manifest_path=manifest,
+                api_key=settings.nvd_api_key,
+                progress_callback=_on_progress,
+            )
+
+    except FileExistsError as exc:
+        err_console.print(f"[red]✖ Download failed:[/red] {exc}")
+        err_console.print("[yellow]Suggestion:[/yellow] Pass --force to re-download snapshot.")
+        raise typer.Exit(code=1) from exc
+    except Exception as exc:
+        err_console.print(f"[red]✖ Download failed:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    console.print(
+        f"[green]✔ Downloaded[/green] {dest}  sha256={res['sha256'][:12]}...  "
+        f"{res['bytes']} bytes  (requested {res['requested_cve_count']} CVEs, "
+        f"fetched {res['fetched_cve_count']} records, missing {res['missing_cve_count']})",
+        soft_wrap=True,
+    )
+
+
 @ingest_app.command("attack")
 def ingest_attack_cmd() -> None:
     """Parse the ATT&CK STIX snapshot and populate the Postgres graph database.
