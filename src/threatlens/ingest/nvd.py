@@ -8,67 +8,11 @@ the limit produces 403 storms that look like outages — the bucket is not
 optional.
 """
 
-from __future__ import annotations
-
-import time
-from collections.abc import Callable
-
+from threatlens.ingest.fetch import TokenBucket as TokenBucket
 from threatlens.models import Node
 
 NVD_ENDPOINT = "https://services.nvd.nist.gov/rest/json/cves/2.0"
 NVD_DETAIL = "https://nvd.nist.gov/vuln/detail/"
-
-
-# ---------------------------------------------------------------------------
-# Rate limiter
-# ---------------------------------------------------------------------------
-
-
-class TokenBucket:
-    """Leaky-bucket rate limiter with injectable clock for testing.
-
-    The NVD API returns 403 when the limit is exceeded and does not tell you
-    how long to wait. A token bucket avoids hitting it in the first place.
-
-    Args:
-        rate:        number of tokens (requests) per window
-        per_seconds: length of the window in seconds
-        clock:       injectable monotonic clock — tests pass a fake
-        sleep:       injectable sleep — tests record instead of blocking
-    """
-
-    def __init__(
-        self,
-        rate: int,
-        per_seconds: float,
-        clock: Callable[[], float] = time.monotonic,
-        sleep: Callable[[float], None] = time.sleep,
-    ) -> None:
-        self.rate = rate
-        self.per_seconds = per_seconds
-        self._clock = clock
-        self._sleep = sleep
-        self._tokens = float(rate)
-        self._last = clock()
-
-    def acquire(self) -> None:
-        """Block until a token is available, then consume one."""
-        self._refill()
-        if self._tokens < 1.0:
-            deficit = 1.0 - self._tokens
-            wait = deficit * (self.per_seconds / self.rate)
-            self._sleep(wait)
-            self._refill()
-        self._tokens -= 1.0
-
-    def _refill(self) -> None:
-        now = self._clock()
-        elapsed = now - self._last
-        self._last = now
-        self._tokens = min(
-            float(self.rate),
-            self._tokens + elapsed * (self.rate / self.per_seconds),
-        )
 
 
 # ---------------------------------------------------------------------------

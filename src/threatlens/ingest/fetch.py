@@ -10,6 +10,8 @@ import hashlib
 import json
 import logging
 import tempfile
+import threading
+import time
 from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from datetime import UTC, datetime
@@ -26,6 +28,105 @@ ATTACK_URL = (
 )
 
 HTTP_TIMEOUT = httpx.Timeout(connect=10.0, read=120.0, write=30.0, pool=10.0)
+
+DEFAULT_NVD_RATE_WITH_KEY = 50
+DEFAULT_NVD_RATE_WITHOUT_KEY = 5
+DEFAULT_NVD_WINDOW_SECONDS = 30.0
+
+
+class TokenBucket:
+    """Token-bucket rate limiter with per-API-key isolation and injectable clock.
+
+    Rate limits requests to external services like the NVD API. When an API key is
+    configured, NVD allows 50 requests per 30 seconds; without a key, it allows
+    only 5 requests per 30 seconds. Exceeding the limit produces HTTP 403 errors.
+
+    Token states are tracked per API key to ensure key isolation.
+
+    Args:
+        rate: Optional explicit rate limit (requests per window). If None, chosen
+            based on whether an API key is provided (50 with key, 5 without).
+        per_seconds: Duration of the rate limit window in seconds (default 30.0).
+        api_key: Default API key for this bucket instance.
+        clock: Injectable monotonic clock returning current timestamp as float.
+        sleep: Injectable sleep callable taking duration in seconds.
+    """
+
+    def __init__(
+        self,
+        rate: int | None = None,
+        per_seconds: float = DEFAULT_NVD_WINDOW_SECONDS,
+        api_key: str | None = None,
+        clock: Callable[[], float] = time.monotonic,
+        sleep: Callable[[float], None] = time.sleep,
+    ) -> None:
+        self.default_rate = rate
+        self.per_seconds = per_seconds
+        self.default_api_key = api_key
+        self._clock = clock
+        self._sleep = sleep
+        self._lock = threading.Lock()
+        self._states: dict[str | None, dict[str, float]] = {}
+
+    def acquire(self, api_key: str | None = None) -> None:
+        """Block until a token is available for the given API key, then consume one.
+
+        If api_key is None, uses default_api_key passed at initialization.
+        Calculates exact refill based on elapsed time. If tokens are exhausted,
+        sleeps for the calculated duration before refilling and consuming.
+        """
+        key = api_key if api_key is not None else self.default_api_key
+        with self._lock:
+            rate = self._resolve_rate(key)
+            now = self._clock()
+
+            if key not in self._states:
+                self._states[key] = {
+                    "tokens": float(rate),
+                    "last_refill": now,
+                }
+
+            state = self._states[key]
+            self._refill(state, rate, now)
+
+            if state["tokens"] < 1.0:
+                deficit = 1.0 - state["tokens"]
+                wait_time = deficit * (self.per_seconds / float(rate))
+                self._sleep(wait_time)
+                now_after_sleep = self._clock()
+                self._refill(state, rate, now_after_sleep)
+
+            state["tokens"] -= 1.0
+
+    def get_tokens(self, api_key: str | None = None) -> float:
+        """Return available tokens for an API key after refilling to current time."""
+        key = api_key if api_key is not None else self.default_api_key
+        with self._lock:
+            rate = self._resolve_rate(key)
+            now = self._clock()
+            if key not in self._states:
+                return float(rate)
+            state = self._states[key]
+            self._refill(state, rate, now)
+            return state["tokens"]
+
+    def get_rate(self, api_key: str | None = None) -> int:
+        """Return the effective rate limit (requests per window) for an API key."""
+        key = api_key if api_key is not None else self.default_api_key
+        return self._resolve_rate(key)
+
+    def _resolve_rate(self, key: str | None) -> int:
+        if self.default_rate is not None:
+            return self.default_rate
+        if key and isinstance(key, str) and key.strip():
+            return DEFAULT_NVD_RATE_WITH_KEY
+        return DEFAULT_NVD_RATE_WITHOUT_KEY
+
+    def _refill(self, state: dict[str, float], rate: int, now: float) -> None:
+        elapsed = max(0.0, now - state["last_refill"])
+        state["last_refill"] = now
+        refill_amount = elapsed * (float(rate) / self.per_seconds)
+        state["tokens"] = min(float(rate), state["tokens"] + refill_amount)
 
 
 def _should_retry_exception(exc: BaseException) -> bool:

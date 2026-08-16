@@ -1,12 +1,6 @@
-"""Rate limiter tests. Uses a fake clock — never calls time.sleep for real.
+import pytest
 
-The NVD API will 403-storm you if you exceed the limit. The bucket must:
-- allow bursts up to the rate
-- block (via sleep) when exhausted
-- refill correctly over time
-"""
-
-from threatlens.ingest.nvd import TokenBucket
+from threatlens.ingest.fetch import TokenBucket
 
 
 class FakeClock:
@@ -73,4 +67,51 @@ def test_single_token_rate():
     b.acquire()
     assert c.slept == []
     b.acquire()
+    assert len(c.slept) == 1
+
+
+def test_rate_limit_with_api_key():
+    """When an API key is configured, rate limit is 50 requests per 30 seconds."""
+    c = FakeClock()
+    b = TokenBucket(api_key="test-key-123", clock=c.time, sleep=c.sleep)
+    assert b.get_rate() == 50
+    for _ in range(50):
+        b.acquire()
+    assert c.slept == []
+    b.acquire()
+    assert len(c.slept) == 1
+    assert pytest.approx(c.slept[0], rel=1e-3) == 0.6
+
+
+def test_rate_limit_without_api_key():
+    """When no API key is configured, rate limit is 5 requests per 30 seconds."""
+    c = FakeClock()
+    b = TokenBucket(api_key=None, clock=c.time, sleep=c.sleep)
+    assert b.get_rate() == 5
+    for _ in range(5):
+        b.acquire()
+    assert c.slept == []
+    b.acquire()
+    assert len(c.slept) == 1
+    assert pytest.approx(c.slept[0], rel=1e-3) == 6.0
+
+
+def test_key_isolation_between_api_keys():
+    """Rate limiting is per API key; exhausting key A does not affect key B or None."""
+    c = FakeClock()
+    b = TokenBucket(clock=c.time, sleep=c.sleep)
+
+    for _ in range(50):
+        b.acquire(api_key="key-A")
+    assert c.slept == []
+
+    for _ in range(50):
+        b.acquire(api_key="key-B")
+    assert c.slept == []
+
+    for _ in range(5):
+        b.acquire(api_key=None)
+    assert c.slept == []
+
+    b.acquire(api_key="key-A")
     assert len(c.slept) == 1
