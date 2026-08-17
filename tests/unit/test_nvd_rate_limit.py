@@ -211,3 +211,56 @@ def test_concurrent_acquires():
 
     assert pytest.approx(b.get_tokens()) == 0.0
     assert c.slept == []
+
+
+def test_lock_released_during_sleep_across_keys():
+    """Sleeping for one rate-limited key does not lock or block acquisitions for another key."""
+    import threading
+    import time
+
+    c = FakeClock()
+    b = TokenBucket(rate=1, per_seconds=10.0, clock=c.time, sleep=c.sleep)
+
+    # Exhaust keyA
+    b.acquire(api_key="keyA")
+
+    key_b_acquired = False
+
+    def acquire_key_a():
+        # Will block and sleep for keyA
+        b.acquire(api_key="keyA")
+
+    def acquire_key_b():
+        nonlocal key_b_acquired
+        time.sleep(0.01)
+        b.acquire(api_key="keyB")
+        key_b_acquired = True
+
+    t_a = threading.Thread(target=acquire_key_a)
+    t_b = threading.Thread(target=acquire_key_b)
+
+    t_a.start()
+    t_b.start()
+
+    t_b.join(timeout=1.0)
+    assert key_b_acquired is True
+    t_a.join()
+
+
+def test_acquire_terminates_with_non_integer_rate_and_window():
+    """Floating-point round-trip in wait_time must not cause infinite sleep loop.
+
+    wait_time = deficit * (per_seconds / rate) is computed so that the following
+    refill should restore exactly 1.0 token. But (per_seconds/rate)*(rate/per_seconds)
+    is not always exactly 1.0 in IEEE-754. Without a small epsilon in the >= 1.0 check,
+    the bucket loops forever on infinitesimally small sleeps. Guard with a bounded
+    iteration count to catch any regression.
+    """
+    c = FakeClock()
+    b = TokenBucket(rate=3, per_seconds=10.0, clock=c.time, sleep=c.sleep)
+    # Acquire 10 tokens — the first 3 are free, the rest require sleeping.
+    for _ in range(10):
+        b.acquire()
+    # Must have completed without hanging; sleep count should be finite and bounded.
+    assert len(c.slept) == 7  # 10 - 3 (initial burst) = 7 sleeps
+    assert all(s > 0 for s in c.slept)

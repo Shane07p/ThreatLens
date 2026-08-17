@@ -983,3 +983,163 @@ def test_retries_respect_rate_limiter_and_fake_clock(tmp_path, monkeypatch):
     assert len(c.slept) == 1
     assert c.slept[0] == 10.0
     assert res["fetched_cve_count"] == 1
+
+
+def test_collect_scoped_cve_ids_empty_inputs(tmp_path):
+    """Empty CSV file and empty KEV catalog return empty valid and invalid lists."""
+    from threatlens.ingest.fetch import collect_scoped_cve_ids
+
+    mappings_file = tmp_path / "Att&ckToCveMappings.csv"
+    mappings_file.write_text("CVE ID,Primary Impact\n")
+
+    valid_ids, invalid_ids = collect_scoped_cve_ids(
+        mappings_path=mappings_file, kev_data={"vulnerabilities": []}
+    )
+    assert valid_ids == []
+    assert invalid_ids == []
+
+
+def test_fetch_scoped_nvd_pagination_loop_prevention(tmp_path):
+    """Stops paginating safely if totalResults claims more items than API returns.
+
+    A misbehaving NVD server that always returns totalResults=100 but delivers only
+    one item per page must not spin forever. The hard per-CVE page cap (10) must
+    bound the number of HTTP requests.
+    """
+    from threatlens.ingest.fetch import TokenBucket, fetch_scoped_nvd
+
+    mappings_file = tmp_path / "Att&ckToCveMappings.csv"
+    mappings_file.write_text("CVE ID,Primary Impact\nCVE-2021-44228,Log4Shell\n")
+    dest = tmp_path / "nvd-scoped.json"
+
+    paged_calls = 0
+
+    class IncompletePagedTransport(httpx.BaseTransport):
+        def handle_request(self, request):
+            nonlocal paged_calls
+            paged_calls += 1
+            # Always claims 100 results but only delivers 1 item per page.
+            body = json.dumps(
+                {
+                    "totalResults": 100,
+                    "vulnerabilities": [{"cve": {"id": "CVE-2021-44228"}}],
+                }
+            ).encode()
+            return httpx.Response(200, content=body)
+
+    client = httpx.Client(transport=IncompletePagedTransport())
+
+    res = fetch_scoped_nvd(
+        dest=dest,
+        mappings_path=mappings_file,
+        client=client,
+        rate_limiter=TokenBucket(rate=100),
+        kev_data={"vulnerabilities": []},
+    )
+
+    # Must not spin to 100 — capped at _MAX_PAGES_PER_CVE (10) pages total
+    assert paged_calls <= 10, f"Expected ≤10 page requests, got {paged_calls}"
+    assert paged_calls >= 1
+    assert res["fetched_cve_count"] >= 1
+
+
+def test_parse_cve_record_accepts_wrapper_dict():
+    """parse_cve_record unwraps {"cve": {...}} before parsing.
+
+    The nvd.py fix allows callers to pass the raw NVD vulnerability item
+    (which wraps the inner cve dict) directly. This is the canonical usage
+    when iterating the snapshot written by fetch_scoped_nvd.
+    """
+    from threatlens.ingest.nvd import parse_cve_record
+
+    wrapper = {
+        "cve": {
+            "id": "CVE-2021-44228",
+            "descriptions": [{"lang": "en", "value": "Log4j RCE"}],
+            "metrics": {
+                "cvssMetricV31": [
+                    {"cvssData": {"baseScore": 10.0, "vectorString": "CVSS:3.1/AV:N"}}
+                ]
+            },
+            "references": [{"url": "https://example.com/advisory"}],
+        }
+    }
+
+    node = parse_cve_record(wrapper)
+    assert node is not None
+    assert node.id == "cve:CVE-2021-44228"
+    assert node.attrs["cvss_score"] == 10.0
+
+    # Inner-dict form must also still work (backward compatibility).
+    node2 = parse_cve_record(wrapper["cve"])
+    assert node2 is not None
+    assert node2.id == "cve:CVE-2021-44228"
+
+
+def test_collect_scoped_cve_ids_kev_via_http_mock(tmp_path, monkeypatch):
+    """collect_scoped_cve_ids fetches KEV over HTTP when kev_data is None.
+
+    The kev_data=None code path — which creates a temporary httpx.Client,
+    performs a GET request, and closes the client — was previously untested.
+    """
+    from threatlens.ingest.fetch import collect_scoped_cve_ids
+
+    mappings_file = tmp_path / "Att&ckToCveMappings.csv"
+    mappings_file.write_text("CVE ID,Primary Impact\nCVE-2022-22965,Spring4Shell\n")
+
+    kev_response_body = json.dumps(
+        {"vulnerabilities": [{"cveID": "CVE-2023-23397"}, {"cveID": "CVE-2022-22965"}]}
+    ).encode()
+
+    class KevTransport(httpx.BaseTransport):
+        def handle_request(self, request):
+            return httpx.Response(200, content=kev_response_body)
+
+    client = httpx.Client(transport=KevTransport())
+
+    valid_ids, invalid_ids = collect_scoped_cve_ids(
+        mappings_path=mappings_file,
+        client=client,
+    )
+
+    assert "CVE-2022-22965" in valid_ids
+    assert "CVE-2023-23397" in valid_ids
+    assert invalid_ids == []
+
+
+def test_fetch_scoped_nvd_auto_creates_rate_limiter(tmp_path):
+    """fetch_scoped_nvd creates a TokenBucket internally when rate_limiter=None.
+
+    Callers that omit rate_limiter must still get correct rate-limited behaviour
+    driven by an auto-created TokenBucket. This tests the auto-creation path.
+    """
+    from threatlens.ingest.fetch import fetch_scoped_nvd
+
+    mappings_file = tmp_path / "Att&ckToCveMappings.csv"
+    mappings_file.write_text("CVE ID,Primary Impact\nCVE-2021-44228,Log4Shell\n")
+    dest = tmp_path / "nvd-scoped.json"
+
+    class MockTransport(httpx.BaseTransport):
+        def handle_request(self, request):
+            body = json.dumps(
+                {
+                    "totalResults": 1,
+                    "vulnerabilities": [{"cve": {"id": "CVE-2021-44228"}}],
+                }
+            ).encode()
+            return httpx.Response(200, content=body)
+
+    client = httpx.Client(transport=MockTransport())
+
+    # Pass rate_limiter=None explicitly — the function must create its own.
+    res = fetch_scoped_nvd(
+        dest=dest,
+        mappings_path=mappings_file,
+        client=client,
+        rate_limiter=None,
+        kev_data={"vulnerabilities": []},
+    )
+
+    assert dest.exists()
+    assert res["fetched_cve_count"] == 1
+    assert res["requested_cve_count"] == 1

@@ -15,7 +15,7 @@ import tempfile
 import threading
 import time
 from collections.abc import Callable, Generator
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -37,6 +37,11 @@ MAPPINGS_URL = (
 CISA_KEV_URL = "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json"
 NVD_ENDPOINT = "https://services.nvd.nist.gov/rest/json/cves/2.0"
 CVE_ID_PATTERN = re.compile(r"^CVE-\d{4}-\d{4,}$", re.IGNORECASE)
+
+# NVD returns at most one record per cveId query in practice.  Cap per-CVE
+# pagination at this value as a safety net against a server that reports a
+# bogus totalResults and would otherwise spin the loop indefinitely.
+_MAX_PAGES_PER_CVE = 10
 
 
 HTTP_TIMEOUT = httpx.Timeout(connect=10.0, read=120.0, write=30.0, pool=10.0)
@@ -64,6 +69,11 @@ class TokenBucket:
         sleep: Injectable sleep callable taking duration in seconds.
     """
 
+    # Floating-point round-trip through (per_seconds/rate)*(rate/per_seconds) is not
+    # always exactly 1.0. Without this tolerance the token check fires again after the
+    # computed sleep and schedules another infinitesimally small sleep, repeating forever.
+    _EPSILON: float = 1e-9
+
     def __init__(
         self,
         rate: int | None = None,
@@ -89,30 +99,31 @@ class TokenBucket:
 
         If api_key is None, uses default_api_key passed at initialization.
         Calculates exact refill based on elapsed time. If tokens are exhausted,
-        sleeps for the calculated duration before refilling and consuming.
+        sleeps for the calculated duration outside the lock before refilling and consuming.
         """
         key = api_key if api_key is not None else self.default_api_key
-        with self._lock:
-            rate = self._resolve_rate(key)
-            now = self._clock()
+        while True:
+            with self._lock:
+                rate = self._resolve_rate(key)
+                now = self._clock()
 
-            if key not in self._states:
-                self._states[key] = {
-                    "tokens": float(rate),
-                    "last_refill": now,
-                }
+                if key not in self._states:
+                    self._states[key] = {
+                        "tokens": float(rate),
+                        "last_refill": now,
+                    }
 
-            state = self._states[key]
-            self._refill(state, rate, now)
+                state = self._states[key]
+                self._refill(state, rate, now)
 
-            if state["tokens"] < 1.0:
+                if state["tokens"] >= 1.0 - self._EPSILON:
+                    state["tokens"] = max(0.0, state["tokens"] - 1.0)
+                    break
+
                 deficit = 1.0 - state["tokens"]
                 wait_time = deficit * (self.per_seconds / float(rate))
-                self._sleep(wait_time)
-                now_after_sleep = self._clock()
-                self._refill(state, rate, now_after_sleep)
 
-            state["tokens"] -= 1.0
+            self._sleep(wait_time)
 
     def get_tokens(self, api_key: str | None = None) -> float:
         """Return available tokens for an API key after refilling to current time."""
@@ -139,10 +150,11 @@ class TokenBucket:
         return DEFAULT_NVD_RATE_WITHOUT_KEY
 
     def _refill(self, state: dict[str, float], rate: int, now: float) -> None:
-        elapsed = max(0.0, now - state["last_refill"])
-        state["last_refill"] = now
-        refill_amount = elapsed * (float(rate) / self.per_seconds)
-        state["tokens"] = min(float(rate), state["tokens"] + refill_amount)
+        if now > state["last_refill"]:
+            elapsed = now - state["last_refill"]
+            state["last_refill"] = now
+            refill_amount = elapsed * (float(rate) / self.per_seconds)
+            state["tokens"] = min(float(rate), state["tokens"] + refill_amount)
 
 
 def _should_retry_exception(exc: BaseException) -> bool:
@@ -154,7 +166,7 @@ def _should_retry_exception(exc: BaseException) -> bool:
     if isinstance(exc, (httpx.TransportError, httpx.TimeoutException)):
         return True
     if isinstance(exc, httpx.HTTPStatusError):
-        return exc.response.status_code >= 500
+        return exc.response is not None and exc.response.status_code >= 500
     return False
 
 
@@ -162,15 +174,45 @@ def _should_retry_nvd_exception(exc: BaseException) -> bool:
     """Determine whether an exception during NVD API fetch is transient and should be retried.
 
     Retries on transport errors, timeouts, 5xx server errors (e.g. 503 Service Unavailable),
-    and HTTP 403 (NVD rate limit / burst storm response).
-    Unrelated client errors such as 400 Bad Request, 404 Not Found, 401, 422, etc. are NOT retried.
+    and HTTP 403. NVD returns 403 during rate-limit storms even when the bucket is respected,
+    so a single 403 is treated as transient and retried (the token bucket re-acquires before
+    the next attempt, giving the server time to recover).
+
+    HTTP 400, 401, 404, 422, and other client errors are permanent and are NOT retried.
     """
     if isinstance(exc, (httpx.TransportError, httpx.TimeoutException)):
         return True
     if isinstance(exc, httpx.HTTPStatusError):
+        if exc.response is None:
+            return False
         status = exc.response.status_code
-        return status == 403 or status == 503 or status >= 500
+        # 403 is the only sub-500 code NVD emits during rate-limit storms.
+        # All 5xx codes (including 503) are covered by the >= 500 branch.
+        return status == 403 or status >= 500
     return False
+
+
+@retry(
+    retry=retry_if_exception(_should_retry_nvd_exception),
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=0.1, min=0.1, max=1.0),
+    reraise=True,
+)
+def _fetch_nvd_page_with_retry(
+    client: httpx.Client,
+    req_url: str,
+    headers: dict[str, str],
+    rate_limiter: TokenBucket,
+    api_key: str | None,
+) -> dict:
+    """Fetch a single page from NVD API with TokenBucket rate limiting and Tenacity retry.
+
+    Acquires a token from the rate limiter before every attempt (including retries).
+    """
+    rate_limiter.acquire(api_key)
+    resp = client.get(req_url, headers=headers)
+    resp.raise_for_status()
+    return resp.json()
 
 
 @contextmanager
@@ -198,7 +240,8 @@ def _atomic_write_path(dest: Path) -> Generator[Path, None, None]:
         tmp_path.replace(dest)
     except Exception:
         if tmp_path is not None and tmp_path.exists():
-            tmp_path.unlink(missing_ok=True)
+            with suppress(Exception):
+                tmp_path.unlink(missing_ok=True)
         raise
 
 
@@ -467,29 +510,34 @@ def fetch_scoped_nvd(
         for idx, cve_id in enumerate(cve_ids, start=1):
             url = f"{NVD_ENDPOINT}?cveId={cve_id}"
 
-            @retry(
-                retry=retry_if_exception(_should_retry_nvd_exception),
-                stop=stop_after_attempt(3),
-                wait=wait_exponential(multiplier=0.1, min=0.1, max=1.0),
-                reraise=True,
+            data = _fetch_nvd_page_with_retry(
+                client=client,
+                req_url=url,
+                headers=headers,
+                rate_limiter=rate_limiter,
+                api_key=api_key,
             )
-            def _fetch_single_cve(req_url: str) -> dict:
-                rate_limiter.acquire(api_key)
-                resp = client.get(req_url, headers=headers)
-                resp.raise_for_status()
-                return resp.json()
-
-            data = _fetch_single_cve(url)
             vuln_items = data.get("vulnerabilities", [])
 
+            page_count = 1
             total_results = data.get("totalResults", len(vuln_items))
-            while len(vuln_items) < total_results:
+            while len(vuln_items) < total_results and page_count < _MAX_PAGES_PER_CVE:
                 paged_url = f"{NVD_ENDPOINT}?cveId={cve_id}&startIndex={len(vuln_items)}"
-                paged_data = _fetch_single_cve(paged_url)
+                paged_data = _fetch_nvd_page_with_retry(
+                    client=client,
+                    req_url=paged_url,
+                    headers=headers,
+                    rate_limiter=rate_limiter,
+                    api_key=api_key,
+                )
                 new_items = paged_data.get("vulnerabilities", [])
                 if not new_items:
                     break
+                prev_len = len(vuln_items)
                 vuln_items.extend(new_items)
+                page_count += 1
+                if len(vuln_items) <= prev_len:
+                    break
 
             if not vuln_items:
                 missing_cve_ids.append(cve_id)

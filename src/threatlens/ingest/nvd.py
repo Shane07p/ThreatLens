@@ -52,9 +52,10 @@ def _cvss(raw: dict) -> tuple[float | None, str | None, str | None]:
 def parse_cve_record(raw: dict) -> Node | None:
     """Turn a single NVD CVE JSON object into a Node, or None if unusable.
 
-    Expects the inner ``cve`` dict from the NVD 2.0 API response — the one
-    that has ``id``, ``descriptions``, ``metrics``, etc.
+    Expects the inner ``cve`` dict from the NVD 2.0 API response or top-level wrapper.
     """
+    if "cve" in raw and isinstance(raw["cve"], dict):
+        raw = raw["cve"]
     cve_id = raw.get("id")
     if not cve_id:
         return None
@@ -74,6 +75,10 @@ def parse_cve_record(raw: dict) -> Node | None:
             "cvss_vector": vector,
             "published": raw.get("published"),
             "last_modified": raw.get("lastModified"),
-            "references": [r.get("url") for r in raw.get("references", []) if r.get("url")],
+            "references": [
+                r.get("url")
+                for r in raw.get("references", [])
+                if isinstance(r, dict) and r.get("url")
+            ],
         },
     )
