@@ -234,6 +234,124 @@ def test_fetch_attack_command_file_exists_error(mock_fetch_url):
     assert "Download failed" in result.output or "file exists" in result.output
 
 
+@patch("threatlens.ingest.fetch.update_manifest")
+@patch("threatlens.ingest.fetch.fetch_url")
+def test_fetch_mappings_command_success(mock_fetch_url, mock_update_manifest):
+    mock_fetch_url.return_value = {
+        "url": "https://raw.githubusercontent.com/center-for-threat-informed-defense/attack_to_cve/master/Att%26ckToCveMappings.csv",
+        "sha256": "abcdef1234567890abcdef1234567890",
+        "bytes": 2048,
+    }
+    result = runner.invoke(app, ["fetch", "mappings"])
+    assert result.exit_code == 0
+    assert "sha256=abcdef123456..." in result.output
+    assert "2048 bytes" in result.output
+    mock_fetch_url.assert_called_once()
+    mock_update_manifest.assert_called_once()
+    dest_arg = mock_fetch_url.call_args[0][1]
+    assert dest_arg.name == "Att&ckToCveMappings.csv"
+
+
+@patch("threatlens.ingest.fetch.update_manifest")
+@patch("threatlens.ingest.fetch.fetch_url")
+def test_fetch_mappings_command_not_modified(mock_fetch_url, mock_update_manifest):
+    mock_fetch_url.return_value = {
+        "url": "https://raw.githubusercontent.com/center-for-threat-informed-defense/attack_to_cve/master/Att%26ckToCveMappings.csv",
+        "sha256": "abcdef1234567890abcdef1234567890",
+        "bytes": 2048,
+        "not_modified": True,
+    }
+    result = runner.invoke(app, ["fetch", "mappings"])
+    assert result.exit_code == 0
+    assert "Unchanged" in result.output
+    mock_update_manifest.assert_not_called()
+
+
+@patch("threatlens.ingest.fetch.update_manifest")
+@patch("threatlens.ingest.fetch.fetch_url")
+def test_fetch_mappings_command_with_force_flag(mock_fetch_url, mock_update_manifest):
+    mock_fetch_url.return_value = {
+        "url": "https://raw.githubusercontent.com/center-for-threat-informed-defense/attack_to_cve/master/Att%26ckToCveMappings.csv",
+        "sha256": "abcdef1234567890abcdef1234567890",
+        "bytes": 2048,
+    }
+    result = runner.invoke(app, ["fetch", "mappings", "--force"])
+    assert result.exit_code == 0
+    mock_fetch_url.assert_called_once()
+    assert mock_fetch_url.call_args.kwargs.get("force") is True
+
+
+@patch("threatlens.ingest.fetch.fetch_url")
+def test_fetch_mappings_command_file_exists_error(mock_fetch_url):
+    mock_fetch_url.side_effect = FileExistsError("file exists; pass --force")
+    result = runner.invoke(app, ["fetch", "mappings"])
+    assert result.exit_code == 1
+    assert "Download failed" in result.output or "file exists" in result.output
+
+
+@patch("threatlens.ingest.fetch.fetch_url")
+def test_fetch_mappings_command_generic_error(mock_fetch_url):
+    mock_fetch_url.side_effect = RuntimeError("Network error")
+    result = runner.invoke(app, ["fetch", "mappings"])
+    assert result.exit_code == 1
+    assert "Download failed" in result.output
+
+
+def test_fetch_nvd_command_missing_mappings_error(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "threatlens.cli._get_data_paths",
+        lambda: (tmp_path / "raw", tmp_path / "manifest.json"),
+    )
+    result = runner.invoke(app, ["fetch", "nvd"])
+    assert result.exit_code == 1
+    assert "Mappings snapshot missing" in result.output
+
+
+@patch("threatlens.ingest.fetch.fetch_scoped_nvd")
+def test_fetch_nvd_command_success(mock_fetch_scoped, tmp_path, monkeypatch):
+    raw_dir = tmp_path / "raw"
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    mappings_file = raw_dir / "Att&ckToCveMappings.csv"
+    mappings_file.write_text("CVE ID,Primary Impact\nCVE-2021-44228,Log4Shell\n")
+
+    monkeypatch.setattr(
+        "threatlens.cli._get_data_paths",
+        lambda: (raw_dir, tmp_path / "manifest.json"),
+    )
+
+    mock_fetch_scoped.return_value = {
+        "sha256": "1234567890abcdef1234567890abcdef",
+        "bytes": 4096,
+        "requested_cve_count": 5,
+        "fetched_cve_count": 5,
+        "missing_cve_count": 0,
+    }
+
+    result = runner.invoke(app, ["fetch", "nvd"])
+    assert result.exit_code == 0
+    assert "Downloaded" in result.output
+    assert "requested 5 CVEs" in result.output
+    mock_fetch_scoped.assert_called_once()
+
+
+@patch("threatlens.ingest.fetch.fetch_scoped_nvd")
+def test_fetch_nvd_command_file_exists_error(mock_fetch_scoped, tmp_path, monkeypatch):
+    raw_dir = tmp_path / "raw"
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    (raw_dir / "Att&ckToCveMappings.csv").write_text("CVE ID\nCVE-2021-44228\n")
+
+    monkeypatch.setattr(
+        "threatlens.cli._get_data_paths",
+        lambda: (raw_dir, tmp_path / "manifest.json"),
+    )
+
+    mock_fetch_scoped.side_effect = FileExistsError("nvd-scoped.json exists; pass --force")
+
+    result = runner.invoke(app, ["fetch", "nvd"])
+    assert result.exit_code == 1
+    assert "Download failed" in result.output or "pass --force" in result.output
+
+
 def test_ingest_attack_command_missing_snapshot(tmp_path, monkeypatch):
     monkeypatch.setattr(
         "threatlens.cli._get_data_paths",

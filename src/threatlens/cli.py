@@ -265,7 +265,7 @@ def fetch_list_cmd(
 
 
 def _print_fetch_sources(json_output: bool) -> None:
-    from threatlens.ingest.fetch import ATTACK_URL
+    from threatlens.ingest.fetch import ATTACK_URL, MAPPINGS_URL
 
     data_raw, _ = _get_data_paths()
     sources = [
@@ -278,7 +278,7 @@ def _print_fetch_sources(json_output: bool) -> None:
         {
             "name": "mappings",
             "file": str(data_raw / "Att&ckToCveMappings.csv"),
-            "url": "https://raw.githubusercontent.com/.../Att%26ckToCveMappings.csv",
+            "url": MAPPINGS_URL,
             "description": "CVE to ATT&CK Technique KEV mappings dataset",
         },
         {
@@ -366,6 +366,136 @@ def fetch_attack(
             f"{entry['bytes']} bytes",
             soft_wrap=True,
         )
+
+
+@fetch_app.command("mappings")
+def fetch_mappings(
+    force: bool = typer.Option(False, "--force", help="Overwrite existing snapshot"),
+) -> None:
+    """Download the CVE to ATT&CK Technique KEV mappings dataset snapshot.
+
+    Fetches the Att&ckToCveMappings.csv dataset, stores it in data/raw/, and records
+    metadata and SHA-256 provenance in data/manifest.json.
+
+    Raises typer.Exit(code=1) if the file exists and --force is not supplied.
+    """
+    from threatlens.ingest.fetch import MAPPINGS_URL, fetch_url, update_manifest
+
+    data_raw, manifest = _get_data_paths()
+    dest = data_raw / "Att&ckToCveMappings.csv"
+
+    try:
+        with Progress(
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            DownloadColumn(),
+            TransferSpeedColumn(),
+            TimeRemainingColumn(),
+            console=console,
+            transient=True,
+        ) as progress:
+            task = progress.add_task("[cyan]Downloading Mappings dataset...", total=None)
+
+            def _on_progress(chunk_size: int, total_bytes: int | None) -> None:
+                if total_bytes and progress.tasks[task].total != total_bytes:
+                    progress.update(task, total=total_bytes)
+                progress.update(task, advance=chunk_size)
+
+            entry = fetch_url(
+                MAPPINGS_URL,
+                dest,
+                force=force,
+                progress_callback=_on_progress,
+                manifest_path=manifest,
+            )
+
+    except FileExistsError as exc:
+        err_console.print(f"[red]✖ Download failed:[/red] {exc}")
+        err_console.print("[yellow]Suggestion:[/yellow] Pass --force to re-download snapshot.")
+        raise typer.Exit(code=1) from exc
+    except Exception as exc:
+        err_console.print(f"[red]✖ Download failed:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    if entry.get("not_modified"):
+        console.print(
+            f"[yellow]✔ Unchanged[/yellow] {dest.name} (HTTP 304 Not Modified) "
+            f"sha256={entry['sha256'][:12]}...",
+            soft_wrap=True,
+        )
+    else:
+        update_manifest(manifest, dest.name, entry)
+        console.print(
+            f"[green]✔ Downloaded[/green] {dest}  sha256={entry['sha256'][:12]}...  "
+            f"{entry['bytes']} bytes",
+            soft_wrap=True,
+        )
+
+
+@fetch_app.command("nvd")
+def fetch_nvd_cmd(
+    force: bool = typer.Option(False, "--force", help="Overwrite existing snapshot"),
+) -> None:
+    """Perform a scoped download of NVD CVE records for mapped and KEV CVEs.
+
+    Collects CVE IDs from the mappings snapshot (data/raw/Att&ckToCveMappings.csv) and
+    the CISA KEV catalog feed, queries NVD 2.0 API rate-limited per API key via TokenBucket,
+    and atomically stores data/raw/nvd-scoped.json and data/manifest.json.
+
+    Raises typer.Exit(code=1) if mappings snapshot is missing or download fails.
+    """
+    from threatlens.config import get_settings
+    from threatlens.ingest.fetch import fetch_scoped_nvd
+
+    data_raw, manifest = _get_data_paths()
+    mappings_dest = data_raw / "Att&ckToCveMappings.csv"
+    dest = data_raw / "nvd-scoped.json"
+    settings = get_settings()
+
+    if not mappings_dest.exists():
+        err_console.print(f"[red]✖ Mappings snapshot missing at {mappings_dest}[/red]")
+        err_console.print("[yellow]Suggestion:[/yellow] Run: threatlens fetch mappings")
+        raise typer.Exit(code=1)
+
+    try:
+        with Progress(
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+            TimeRemainingColumn(),
+            console=console,
+            transient=True,
+        ) as progress:
+            task = progress.add_task("[cyan]Fetching scoped NVD CVEs...", total=None)
+
+            def _on_progress(processed: int, total: int) -> None:
+                if total > 0 and progress.tasks[task].total != total:
+                    progress.update(task, total=total)
+                progress.update(task, completed=processed)
+
+            res = fetch_scoped_nvd(
+                dest=dest,
+                mappings_path=mappings_dest,
+                force=force,
+                manifest_path=manifest,
+                api_key=settings.nvd_api_key,
+                progress_callback=_on_progress,
+            )
+
+    except FileExistsError as exc:
+        err_console.print(f"[red]✖ Download failed:[/red] {exc}")
+        err_console.print("[yellow]Suggestion:[/yellow] Pass --force to re-download snapshot.")
+        raise typer.Exit(code=1) from exc
+    except Exception as exc:
+        err_console.print(f"[red]✖ Download failed:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    console.print(
+        f"[green]✔ Downloaded[/green] {dest}  sha256={res['sha256'][:12]}...  "
+        f"{res['bytes']} bytes  (requested {res['requested_cve_count']} CVEs, "
+        f"fetched {res['fetched_cve_count']} records, missing {res['missing_cve_count']})",
+        soft_wrap=True,
+    )
 
 
 @ingest_app.command("attack")

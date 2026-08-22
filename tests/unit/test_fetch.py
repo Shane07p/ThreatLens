@@ -396,3 +396,750 @@ def test_fetch_url_fails_after_max_retries(tmp_path, monkeypatch):
         fetch_url("https://example/x.json", dest)
 
     assert not dest.exists()
+
+
+def test_mappings_url_preserves_url_encoding():
+    """MAPPINGS_URL must keep %26 encoded instead of raw & to avoid 404 response."""
+    from threatlens.ingest.fetch import MAPPINGS_URL
+
+    assert "%26" in MAPPINGS_URL
+    assert "Att%26ckToCveMappings.csv" in MAPPINGS_URL
+    assert "Att&ckToCveMappings.csv" not in MAPPINGS_URL
+
+
+def test_fetch_mappings_snapshot_creates_file_and_manifest_entry(tmp_path, mock_httpx_stream):
+    """fetch_url for MAPPINGS_URL downloads Att&ckToCveMappings.csv and updates manifest."""
+    from threatlens.ingest.fetch import MAPPINGS_URL
+
+    mock_httpx_stream([b"CVE ID,Primary Impact\nCVE-2021-44228,Log4Shell\n"])
+    dest = tmp_path / "Att&ckToCveMappings.csv"
+    manifest = tmp_path / "manifest.json"
+
+    res = fetch_url(MAPPINGS_URL, dest, manifest_path=manifest)
+    data = update_manifest(manifest, dest.name, res)
+
+    assert dest.exists()
+    assert dest.read_bytes() == b"CVE ID,Primary Impact\nCVE-2021-44228,Log4Shell\n"
+    assert res["sha256"] == sha256_file(dest)
+
+    entry = data["Att&ckToCveMappings.csv"]
+    assert entry["url"] == MAPPINGS_URL
+    assert entry["sha256"] == res["sha256"]
+    assert "timestamp" in entry
+    assert "fetched_at" in entry
+
+
+def test_fetch_mappings_partial_download_failure_does_not_corrupt_manifest_or_file(
+    tmp_path, mock_httpx_stream
+):
+    """Failed download stream leaves existing file intact and does not pollute manifest."""
+    dest = tmp_path / "Att&ckToCveMappings.csv"
+    dest.write_bytes(b"existing valid data")
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"Att&ckToCveMappings.csv": {"sha256": "original"}}))
+
+    mock_httpx_stream(
+        [b"corrupted partial"],
+        error=RuntimeError("Connection reset"),
+    )
+
+    with pytest.raises(RuntimeError, match="Connection reset"):
+        fetch_url("https://example/mappings.csv", dest, force=True, manifest_path=manifest)
+
+    assert dest.read_bytes() == b"existing valid data"
+    manifest_data = json.loads(manifest.read_text())
+    assert manifest_data["Att&ckToCveMappings.csv"]["sha256"] == "original"
+
+
+def test_collect_scoped_cve_ids_union_and_deduplication(tmp_path):
+    """collect_scoped_cve_ids combines mappings CSV and KEV catalog, deduplicating IDs."""
+    from threatlens.ingest.fetch import collect_scoped_cve_ids
+
+    mappings_file = tmp_path / "Att&ckToCveMappings.csv"
+    mappings_file.write_text(
+        "CVE ID,Primary Impact\n"
+        "CVE-2021-44228,Log4Shell\n"
+        "CVE-2021-44228,DuplicateLog4j\n"
+        "CVE-2022-22965,Spring4Shell\n"
+    )
+
+    kev_data = {
+        "vulnerabilities": [
+            {"cveID": "CVE-2021-44228"},
+            {"cveID": "cve-2023-23397"},
+        ]
+    }
+
+    valid_ids, invalid_ids = collect_scoped_cve_ids(mappings_path=mappings_file, kev_data=kev_data)
+    assert valid_ids == ["CVE-2021-44228", "CVE-2022-22965", "CVE-2023-23397"]
+    assert invalid_ids == []
+
+
+def test_collect_scoped_cve_ids_handles_invalid_cves(tmp_path):
+    """Malformed or invalid CVE ID formats are separated into invalid_ids."""
+    from threatlens.ingest.fetch import collect_scoped_cve_ids
+
+    mappings_file = tmp_path / "Att&ckToCveMappings.csv"
+    mappings_file.write_text(
+        "CVE ID,Primary Impact\nCVE-2021-44228,Valid\nINVALID-ID,Bad\nN/A,Bad\n"
+    )
+
+    kev_data = {"vulnerabilities": [{"cveID": "CVE-INVALID-FORMAT"}]}
+
+    valid_ids, invalid_ids = collect_scoped_cve_ids(mappings_path=mappings_file, kev_data=kev_data)
+    assert valid_ids == ["CVE-2021-44228"]
+    assert set(invalid_ids) == {"INVALID-ID", "N/A", "CVE-INVALID-FORMAT"}
+
+
+def test_collect_scoped_cve_ids_missing_mappings_file_raises_error(tmp_path):
+    """Missing mappings file raises FileNotFoundError."""
+    from threatlens.ingest.fetch import collect_scoped_cve_ids
+
+    missing_file = tmp_path / "nonexistent.csv"
+    with pytest.raises(FileNotFoundError, match="Mappings file not found"):
+        collect_scoped_cve_ids(mappings_path=missing_file, kev_data={})
+
+
+def test_fetch_scoped_nvd_success_and_parse_compatibility(tmp_path):
+    """fetch_scoped_nvd queries NVD 2.0 API, writes snapshot, and produces valid Nodes."""
+    from threatlens.ingest.fetch import TokenBucket, fetch_scoped_nvd
+    from threatlens.ingest.nvd import parse_cve_record
+
+    mappings_file = tmp_path / "Att&ckToCveMappings.csv"
+    mappings_file.write_text("CVE ID,Primary Impact\nCVE-2021-44228,Log4Shell\n")
+    dest = tmp_path / "nvd-scoped.json"
+    manifest = tmp_path / "manifest.json"
+
+    kev_data = {"vulnerabilities": []}
+
+    class MockTransport(httpx.BaseTransport):
+        def handle_request(self, request):
+            url_str = str(request.url)
+            assert "cveId=CVE-2021-44228" in url_str
+            body = json.dumps(
+                {
+                    "totalResults": 1,
+                    "vulnerabilities": [
+                        {
+                            "cve": {
+                                "id": "CVE-2021-44228",
+                                "descriptions": [{"lang": "en", "value": "Log4j2 vuln"}],
+                                "metrics": {
+                                    "cvssMetricV31": [
+                                        {
+                                            "cvssData": {
+                                                "baseScore": 10.0,
+                                                "vectorString": "CVSS:3.1/AV:N",
+                                            }
+                                        }
+                                    ]
+                                },
+                            }
+                        }
+                    ],
+                }
+            ).encode()
+            return httpx.Response(200, content=body)
+
+    client = httpx.Client(transport=MockTransport())
+    tb = TokenBucket(api_key="test-api-key")
+
+    res = fetch_scoped_nvd(
+        dest=dest,
+        mappings_path=mappings_file,
+        manifest_path=manifest,
+        api_key="test-api-key",
+        client=client,
+        rate_limiter=tb,
+        kev_data=kev_data,
+    )
+
+    assert dest.exists()
+    assert res["requested_cve_count"] == 1
+    assert res["fetched_cve_count"] == 1
+    assert res["missing_cve_count"] == 0
+    assert "timestamp" in json.loads(manifest.read_text())["nvd-scoped.json"]
+
+    snapshot_raw = json.loads(dest.read_text(encoding="utf-8"))
+    nodes = [parse_cve_record(v["cve"]) for v in snapshot_raw["vulnerabilities"]]
+    assert len(nodes) == 1
+    assert nodes[0].id == "cve:CVE-2021-44228"
+    assert nodes[0].attrs["cvss_score"] == 10.0
+
+
+def test_fetch_scoped_nvd_pagination_support(tmp_path):
+    """Paginates using startIndex if NVD totalResults > len(vulnerabilities)."""
+    from threatlens.ingest.fetch import TokenBucket, fetch_scoped_nvd
+
+    mappings_file = tmp_path / "Att&ckToCveMappings.csv"
+    mappings_file.write_text("CVE ID,Primary Impact\nCVE-2021-44228,Log4Shell\n")
+    dest = tmp_path / "nvd-scoped.json"
+
+    class PagedTransport(httpx.BaseTransport):
+        def handle_request(self, request):
+            url_str = str(request.url)
+            if "startIndex=1" in url_str:
+                body = json.dumps(
+                    {
+                        "totalResults": 2,
+                        "vulnerabilities": [{"cve": {"id": "CVE-2021-44228", "page": 2}}],
+                    }
+                ).encode()
+            else:
+                body = json.dumps(
+                    {
+                        "totalResults": 2,
+                        "vulnerabilities": [{"cve": {"id": "CVE-2021-44228", "page": 1}}],
+                    }
+                ).encode()
+            return httpx.Response(200, content=body)
+
+    client = httpx.Client(transport=PagedTransport())
+    tb = TokenBucket(api_key="test-key")
+
+    res = fetch_scoped_nvd(
+        dest=dest,
+        mappings_path=mappings_file,
+        client=client,
+        rate_limiter=tb,
+        kev_data={"vulnerabilities": []},
+    )
+
+    assert res["fetched_cve_count"] == 2
+
+
+def test_fetch_scoped_nvd_missing_cve_record_handled(tmp_path):
+    """CVE record absent from NVD is recorded as missing without creating fake records."""
+    from threatlens.ingest.fetch import TokenBucket, fetch_scoped_nvd
+
+    mappings_file = tmp_path / "Att&ckToCveMappings.csv"
+    mappings_file.write_text("CVE ID,Primary Impact\nCVE-9999-0000,NonExistent\n")
+    dest = tmp_path / "nvd-scoped.json"
+
+    class EmptyTransport(httpx.BaseTransport):
+        def handle_request(self, request):
+            body = json.dumps({"totalResults": 0, "vulnerabilities": []}).encode()
+            return httpx.Response(200, content=body)
+
+    client = httpx.Client(transport=EmptyTransport())
+
+    res = fetch_scoped_nvd(
+        dest=dest,
+        mappings_path=mappings_file,
+        client=client,
+        rate_limiter=TokenBucket(),
+        kev_data={"vulnerabilities": []},
+    )
+
+    assert res["requested_cve_count"] == 1
+    assert res["fetched_cve_count"] == 0
+    assert res["missing_cve_count"] == 1
+    snapshot_raw = json.loads(dest.read_text())
+    assert snapshot_raw["vulnerabilities"] == []
+
+
+def test_fetch_scoped_nvd_refuses_overwrite_without_force(tmp_path):
+    """FileExistsError raised if nvd-scoped.json exists and force is False."""
+    from threatlens.ingest.fetch import fetch_scoped_nvd
+
+    dest = tmp_path / "nvd-scoped.json"
+    dest.write_text("{}")
+    mappings_file = tmp_path / "Att&ckToCveMappings.csv"
+    mappings_file.write_text("CVE ID,Primary Impact\nCVE-2021-44228,Log4Shell\n")
+
+    with pytest.raises(FileExistsError, match="--force"):
+        fetch_scoped_nvd(dest, mappings_file, force=False, kev_data={"vulnerabilities": []})
+
+
+def test_fetch_scoped_nvd_failure_preserves_destination_and_manifest(tmp_path):
+    """Network failure mid-download preserves existing snapshot and leaves manifest unpolluted."""
+    from threatlens.ingest.fetch import fetch_scoped_nvd
+
+    dest = tmp_path / "nvd-scoped.json"
+    dest.write_text('{"original": "data"}')
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"nvd-scoped.json": {"sha256": "orig-sha"}}))
+    mappings_file = tmp_path / "Att&ckToCveMappings.csv"
+    mappings_file.write_text("CVE ID,Primary Impact\nCVE-2021-44228,Log4Shell\n")
+
+    class FailingTransport(httpx.BaseTransport):
+        def handle_request(self, request):
+            return httpx.Response(500, content=b"Server error")
+
+    client = httpx.Client(transport=FailingTransport())
+
+    with pytest.raises(httpx.HTTPStatusError):
+        fetch_scoped_nvd(
+            dest=dest,
+            mappings_path=mappings_file,
+            force=True,
+            manifest_path=manifest,
+            client=client,
+            kev_data={"vulnerabilities": []},
+        )
+
+    assert dest.read_text() == '{"original": "data"}'
+    manifest_data = json.loads(manifest.read_text())
+    assert manifest_data["nvd-scoped.json"]["sha256"] == "orig-sha"
+
+
+def test_should_retry_nvd_exception_predicate_rules():
+    """_should_retry_nvd_exception retries 403, 503, 5xx, and transport errors; rejects 400, 404."""
+    from threatlens.ingest.fetch import _should_retry_nvd_exception
+
+    req = httpx.Request("GET", "https://services.nvd.nist.gov/rest/json/cves/2.0")
+
+    assert _should_retry_nvd_exception(httpx.TransportError("connection error")) is True
+    assert _should_retry_nvd_exception(httpx.TimeoutException("timeout")) is True
+    res403 = httpx.HTTPStatusError("403", request=req, response=httpx.Response(403))
+    assert _should_retry_nvd_exception(res403) is True
+    res503 = httpx.HTTPStatusError("503", request=req, response=httpx.Response(503))
+    assert _should_retry_nvd_exception(res503) is True
+    res500 = httpx.HTTPStatusError("500", request=req, response=httpx.Response(500))
+    assert _should_retry_nvd_exception(res500) is True
+
+    res400 = httpx.HTTPStatusError("400", request=req, response=httpx.Response(400))
+    assert _should_retry_nvd_exception(res400) is False
+    res404 = httpx.HTTPStatusError("404", request=req, response=httpx.Response(404))
+    assert _should_retry_nvd_exception(res404) is False
+    res401 = httpx.HTTPStatusError("401", request=req, response=httpx.Response(401))
+    assert _should_retry_nvd_exception(res401) is False
+
+
+def test_nvd_retry_403_followed_by_success(tmp_path, monkeypatch):
+    """HTTP 403 triggers a retry which acquires a rate token and succeeds."""
+    from threatlens.ingest.fetch import TokenBucket, fetch_scoped_nvd
+
+    monkeypatch.setattr("tenacity.nap.sleep", lambda s: None)
+
+    mappings_file = tmp_path / "Att&ckToCveMappings.csv"
+    mappings_file.write_text("CVE ID,Primary Impact\nCVE-2021-44228,Log4Shell\n")
+    dest = tmp_path / "nvd-scoped.json"
+
+    attempts = 0
+
+    class Retry403Transport(httpx.BaseTransport):
+        def handle_request(self, request):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                return httpx.Response(403, content=b"Rate limit 403 storm")
+            body = json.dumps(
+                {"totalResults": 1, "vulnerabilities": [{"cve": {"id": "CVE-2021-44228"}}]}
+            ).encode()
+            return httpx.Response(200, content=body)
+
+    client = httpx.Client(transport=Retry403Transport())
+
+    class TrackedLimiter(TokenBucket):
+        def __init__(self):
+            super().__init__()
+            self.acquire_count = 0
+
+        def acquire(self, api_key=None):
+            self.acquire_count += 1
+            super().acquire(api_key)
+
+    tb = TrackedLimiter()
+
+    res = fetch_scoped_nvd(
+        dest=dest,
+        mappings_path=mappings_file,
+        client=client,
+        rate_limiter=tb,
+        kev_data={"vulnerabilities": []},
+    )
+
+    assert attempts == 2
+    assert tb.acquire_count == 2
+    assert res["fetched_cve_count"] == 1
+
+
+def test_nvd_retry_503_followed_by_success(tmp_path, monkeypatch):
+    """HTTP 503 Service Unavailable triggers a retry and succeeds."""
+    from threatlens.ingest.fetch import TokenBucket, fetch_scoped_nvd
+
+    monkeypatch.setattr("tenacity.nap.sleep", lambda s: None)
+
+    mappings_file = tmp_path / "Att&ckToCveMappings.csv"
+    mappings_file.write_text("CVE ID,Primary Impact\nCVE-2021-44228,Log4Shell\n")
+    dest = tmp_path / "nvd-scoped.json"
+
+    attempts = 0
+
+    class Retry503Transport(httpx.BaseTransport):
+        def handle_request(self, request):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                return httpx.Response(503, content=b"Service Unavailable")
+            body = json.dumps(
+                {"totalResults": 1, "vulnerabilities": [{"cve": {"id": "CVE-2021-44228"}}]}
+            ).encode()
+            return httpx.Response(200, content=body)
+
+    client = httpx.Client(transport=Retry503Transport())
+
+    res = fetch_scoped_nvd(
+        dest=dest,
+        mappings_path=mappings_file,
+        client=client,
+        rate_limiter=TokenBucket(),
+        kev_data={"vulnerabilities": []},
+    )
+
+    assert attempts == 2
+    assert res["fetched_cve_count"] == 1
+
+
+def test_nvd_retry_multiple_transient_failures_then_success(tmp_path, monkeypatch):
+    """Multiple transient errors (503 then 403) are retried up to max attempts."""
+    from threatlens.ingest.fetch import TokenBucket, fetch_scoped_nvd
+
+    monkeypatch.setattr("tenacity.nap.sleep", lambda s: None)
+
+    mappings_file = tmp_path / "Att&ckToCveMappings.csv"
+    mappings_file.write_text("CVE ID,Primary Impact\nCVE-2021-44228,Log4Shell\n")
+    dest = tmp_path / "nvd-scoped.json"
+
+    attempts = 0
+
+    class MultiFailTransport(httpx.BaseTransport):
+        def handle_request(self, request):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                return httpx.Response(503, content=b"Service Unavailable")
+            if attempts == 2:
+                return httpx.Response(403, content=b"Forbidden")
+            body = json.dumps(
+                {"totalResults": 1, "vulnerabilities": [{"cve": {"id": "CVE-2021-44228"}}]}
+            ).encode()
+            return httpx.Response(200, content=body)
+
+    client = httpx.Client(transport=MultiFailTransport())
+
+    res = fetch_scoped_nvd(
+        dest=dest,
+        mappings_path=mappings_file,
+        client=client,
+        rate_limiter=TokenBucket(),
+        kev_data={"vulnerabilities": []},
+    )
+
+    assert attempts == 3
+    assert res["fetched_cve_count"] == 1
+
+
+def test_nvd_retry_max_attempts_exhausted_reraises_exception(tmp_path, monkeypatch):
+    """Persistent 503 failures stop after max attempts (3) and reraise exception."""
+    from threatlens.ingest.fetch import TokenBucket, fetch_scoped_nvd
+
+    monkeypatch.setattr("tenacity.nap.sleep", lambda s: None)
+
+    mappings_file = tmp_path / "Att&ckToCveMappings.csv"
+    mappings_file.write_text("CVE ID,Primary Impact\nCVE-2021-44228,Log4Shell\n")
+    dest = tmp_path / "nvd-scoped.json"
+
+    attempts = 0
+
+    class PersistentFailTransport(httpx.BaseTransport):
+        def handle_request(self, request):
+            nonlocal attempts
+            attempts += 1
+            return httpx.Response(503, content=b"Persistent Unavailable")
+
+    client = httpx.Client(transport=PersistentFailTransport())
+
+    with pytest.raises(httpx.HTTPStatusError) as exc_info:
+        fetch_scoped_nvd(
+            dest=dest,
+            mappings_path=mappings_file,
+            client=client,
+            rate_limiter=TokenBucket(),
+            kev_data={"vulnerabilities": []},
+        )
+
+    assert exc_info.value.response.status_code == 503
+    assert attempts == 3
+    assert not dest.exists()
+
+
+def test_nvd_non_retryable_400_fails_immediately_without_retry(tmp_path, monkeypatch):
+    """HTTP 400 Bad Request is non-retryable and fails on attempt 1."""
+    from threatlens.ingest.fetch import TokenBucket, fetch_scoped_nvd
+
+    monkeypatch.setattr("tenacity.nap.sleep", lambda s: None)
+
+    mappings_file = tmp_path / "Att&ckToCveMappings.csv"
+    mappings_file.write_text("CVE ID,Primary Impact\nCVE-2021-44228,Log4Shell\n")
+    dest = tmp_path / "nvd-scoped.json"
+
+    attempts = 0
+
+    class Fail400Transport(httpx.BaseTransport):
+        def handle_request(self, request):
+            nonlocal attempts
+            attempts += 1
+            return httpx.Response(400, content=b"Bad Request")
+
+    client = httpx.Client(transport=Fail400Transport())
+
+    with pytest.raises(httpx.HTTPStatusError) as exc_info:
+        fetch_scoped_nvd(
+            dest=dest,
+            mappings_path=mappings_file,
+            client=client,
+            rate_limiter=TokenBucket(),
+            kev_data={"vulnerabilities": []},
+        )
+
+    assert exc_info.value.response.status_code == 400
+    assert attempts == 1
+
+
+def test_nvd_non_retryable_404_fails_immediately_without_retry(tmp_path, monkeypatch):
+    """HTTP 404 Not Found is non-retryable and fails on attempt 1."""
+    from threatlens.ingest.fetch import TokenBucket, fetch_scoped_nvd
+
+    monkeypatch.setattr("tenacity.nap.sleep", lambda s: None)
+
+    mappings_file = tmp_path / "Att&ckToCveMappings.csv"
+    mappings_file.write_text("CVE ID,Primary Impact\nCVE-2021-44228,Log4Shell\n")
+    dest = tmp_path / "nvd-scoped.json"
+
+    attempts = 0
+
+    class Fail404Transport(httpx.BaseTransport):
+        def handle_request(self, request):
+            nonlocal attempts
+            attempts += 1
+            return httpx.Response(404, content=b"Not Found")
+
+    client = httpx.Client(transport=Fail404Transport())
+
+    with pytest.raises(httpx.HTTPStatusError) as exc_info:
+        fetch_scoped_nvd(
+            dest=dest,
+            mappings_path=mappings_file,
+            client=client,
+            rate_limiter=TokenBucket(),
+            kev_data={"vulnerabilities": []},
+        )
+
+    assert exc_info.value.response.status_code == 404
+    assert attempts == 1
+
+
+def test_retries_respect_rate_limiter_and_fake_clock(tmp_path, monkeypatch):
+    """Retries invoke rate_limiter.acquire, triggering clock sleep if rate budget is exhausted."""
+    from threatlens.ingest.fetch import TokenBucket, fetch_scoped_nvd
+
+    monkeypatch.setattr("tenacity.nap.sleep", lambda s: None)
+
+    mappings_file = tmp_path / "Att&ckToCveMappings.csv"
+    mappings_file.write_text("CVE ID,Primary Impact\nCVE-2021-44228,Log4Shell\n")
+    dest = tmp_path / "nvd-scoped.json"
+
+    attempts = 0
+
+    class Transport403Then200(httpx.BaseTransport):
+        def handle_request(self, request):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                return httpx.Response(403, content=b"Rate limit 403")
+            body = json.dumps(
+                {"totalResults": 1, "vulnerabilities": [{"cve": {"id": "CVE-2021-44228"}}]}
+            ).encode()
+            return httpx.Response(200, content=body)
+
+    client = httpx.Client(transport=Transport403Then200())
+
+    class FakeClock:
+        def __init__(self):
+            self.now = 0.0
+            self.slept = []
+
+        def time(self):
+            return self.now
+
+        def sleep(self, s):
+            self.slept.append(s)
+            self.now += s
+
+    c = FakeClock()
+    tb = TokenBucket(rate=1, per_seconds=10.0, clock=c.time, sleep=c.sleep)
+
+    res = fetch_scoped_nvd(
+        dest=dest,
+        mappings_path=mappings_file,
+        client=client,
+        rate_limiter=tb,
+        kev_data={"vulnerabilities": []},
+    )
+
+    assert attempts == 2
+    assert len(c.slept) == 1
+    assert c.slept[0] == 10.0
+    assert res["fetched_cve_count"] == 1
+
+
+def test_collect_scoped_cve_ids_empty_inputs(tmp_path):
+    """Empty CSV file and empty KEV catalog return empty valid and invalid lists."""
+    from threatlens.ingest.fetch import collect_scoped_cve_ids
+
+    mappings_file = tmp_path / "Att&ckToCveMappings.csv"
+    mappings_file.write_text("CVE ID,Primary Impact\n")
+
+    valid_ids, invalid_ids = collect_scoped_cve_ids(
+        mappings_path=mappings_file, kev_data={"vulnerabilities": []}
+    )
+    assert valid_ids == []
+    assert invalid_ids == []
+
+
+def test_fetch_scoped_nvd_pagination_loop_prevention(tmp_path):
+    """Stops paginating safely if totalResults claims more items than API returns.
+
+    A misbehaving NVD server that always returns totalResults=100 but delivers only
+    one item per page must not spin forever. The hard per-CVE page cap (10) must
+    bound the number of HTTP requests.
+    """
+    from threatlens.ingest.fetch import TokenBucket, fetch_scoped_nvd
+
+    mappings_file = tmp_path / "Att&ckToCveMappings.csv"
+    mappings_file.write_text("CVE ID,Primary Impact\nCVE-2021-44228,Log4Shell\n")
+    dest = tmp_path / "nvd-scoped.json"
+
+    paged_calls = 0
+
+    class IncompletePagedTransport(httpx.BaseTransport):
+        def handle_request(self, request):
+            nonlocal paged_calls
+            paged_calls += 1
+            # Always claims 100 results but only delivers 1 item per page.
+            body = json.dumps(
+                {
+                    "totalResults": 100,
+                    "vulnerabilities": [{"cve": {"id": "CVE-2021-44228"}}],
+                }
+            ).encode()
+            return httpx.Response(200, content=body)
+
+    client = httpx.Client(transport=IncompletePagedTransport())
+
+    res = fetch_scoped_nvd(
+        dest=dest,
+        mappings_path=mappings_file,
+        client=client,
+        rate_limiter=TokenBucket(rate=100),
+        kev_data={"vulnerabilities": []},
+    )
+
+    # Must not spin to 100 — capped at _MAX_PAGES_PER_CVE (10) pages total
+    assert paged_calls <= 10, f"Expected ≤10 page requests, got {paged_calls}"
+    assert paged_calls >= 1
+    assert res["fetched_cve_count"] >= 1
+
+
+def test_parse_cve_record_accepts_wrapper_dict():
+    """parse_cve_record unwraps {"cve": {...}} before parsing.
+
+    The nvd.py fix allows callers to pass the raw NVD vulnerability item
+    (which wraps the inner cve dict) directly. This is the canonical usage
+    when iterating the snapshot written by fetch_scoped_nvd.
+    """
+    from threatlens.ingest.nvd import parse_cve_record
+
+    wrapper = {
+        "cve": {
+            "id": "CVE-2021-44228",
+            "descriptions": [{"lang": "en", "value": "Log4j RCE"}],
+            "metrics": {
+                "cvssMetricV31": [
+                    {"cvssData": {"baseScore": 10.0, "vectorString": "CVSS:3.1/AV:N"}}
+                ]
+            },
+            "references": [{"url": "https://example.com/advisory"}],
+        }
+    }
+
+    node = parse_cve_record(wrapper)
+    assert node is not None
+    assert node.id == "cve:CVE-2021-44228"
+    assert node.attrs["cvss_score"] == 10.0
+
+    # Inner-dict form must also still work (backward compatibility).
+    node2 = parse_cve_record(wrapper["cve"])
+    assert node2 is not None
+    assert node2.id == "cve:CVE-2021-44228"
+
+
+def test_collect_scoped_cve_ids_kev_via_http_mock(tmp_path, monkeypatch):
+    """collect_scoped_cve_ids fetches KEV over HTTP when kev_data is None.
+
+    The kev_data=None code path — which creates a temporary httpx.Client,
+    performs a GET request, and closes the client — was previously untested.
+    """
+    from threatlens.ingest.fetch import collect_scoped_cve_ids
+
+    mappings_file = tmp_path / "Att&ckToCveMappings.csv"
+    mappings_file.write_text("CVE ID,Primary Impact\nCVE-2022-22965,Spring4Shell\n")
+
+    kev_response_body = json.dumps(
+        {"vulnerabilities": [{"cveID": "CVE-2023-23397"}, {"cveID": "CVE-2022-22965"}]}
+    ).encode()
+
+    class KevTransport(httpx.BaseTransport):
+        def handle_request(self, request):
+            return httpx.Response(200, content=kev_response_body)
+
+    client = httpx.Client(transport=KevTransport())
+
+    valid_ids, invalid_ids = collect_scoped_cve_ids(
+        mappings_path=mappings_file,
+        client=client,
+    )
+
+    assert "CVE-2022-22965" in valid_ids
+    assert "CVE-2023-23397" in valid_ids
+    assert invalid_ids == []
+
+
+def test_fetch_scoped_nvd_auto_creates_rate_limiter(tmp_path):
+    """fetch_scoped_nvd creates a TokenBucket internally when rate_limiter=None.
+
+    Callers that omit rate_limiter must still get correct rate-limited behaviour
+    driven by an auto-created TokenBucket. This tests the auto-creation path.
+    """
+    from threatlens.ingest.fetch import fetch_scoped_nvd
+
+    mappings_file = tmp_path / "Att&ckToCveMappings.csv"
+    mappings_file.write_text("CVE ID,Primary Impact\nCVE-2021-44228,Log4Shell\n")
+    dest = tmp_path / "nvd-scoped.json"
+
+    class MockTransport(httpx.BaseTransport):
+        def handle_request(self, request):
+            body = json.dumps(
+                {
+                    "totalResults": 1,
+                    "vulnerabilities": [{"cve": {"id": "CVE-2021-44228"}}],
+                }
+            ).encode()
+            return httpx.Response(200, content=body)
+
+    client = httpx.Client(transport=MockTransport())
+
+    # Pass rate_limiter=None explicitly — the function must create its own.
+    res = fetch_scoped_nvd(
+        dest=dest,
+        mappings_path=mappings_file,
+        client=client,
+        rate_limiter=None,
+        kev_data={"vulnerabilities": []},
+    )
+
+    assert dest.exists()
+    assert res["fetched_cve_count"] == 1
+    assert res["requested_cve_count"] == 1

@@ -1,12 +1,6 @@
-"""Rate limiter tests. Uses a fake clock — never calls time.sleep for real.
+import pytest
 
-The NVD API will 403-storm you if you exceed the limit. The bucket must:
-- allow bursts up to the rate
-- block (via sleep) when exhausted
-- refill correctly over time
-"""
-
-from threatlens.ingest.nvd import TokenBucket
+from threatlens.ingest.fetch import TokenBucket
 
 
 class FakeClock:
@@ -74,3 +68,199 @@ def test_single_token_rate():
     assert c.slept == []
     b.acquire()
     assert len(c.slept) == 1
+
+
+def test_rate_limit_with_api_key():
+    """When an API key is configured, rate limit is 50 requests per 30 seconds."""
+    c = FakeClock()
+    b = TokenBucket(api_key="test-key-123", clock=c.time, sleep=c.sleep)
+    assert b.get_rate() == 50
+    for _ in range(50):
+        b.acquire()
+    assert c.slept == []
+    b.acquire()
+    assert len(c.slept) == 1
+    assert pytest.approx(c.slept[0], rel=1e-3) == 0.6
+
+
+def test_rate_limit_without_api_key():
+    """When no API key is configured, rate limit is 5 requests per 30 seconds."""
+    c = FakeClock()
+    b = TokenBucket(api_key=None, clock=c.time, sleep=c.sleep)
+    assert b.get_rate() == 5
+    for _ in range(5):
+        b.acquire()
+    assert c.slept == []
+    b.acquire()
+    assert len(c.slept) == 1
+    assert pytest.approx(c.slept[0], rel=1e-3) == 6.0
+
+
+def test_key_isolation_between_api_keys():
+    """Rate limiting is per API key; exhausting key A does not affect key B or None."""
+    c = FakeClock()
+    b = TokenBucket(clock=c.time, sleep=c.sleep)
+
+    for _ in range(50):
+        b.acquire(api_key="key-A")
+    assert c.slept == []
+
+    for _ in range(50):
+        b.acquire(api_key="key-B")
+    assert c.slept == []
+
+    for _ in range(5):
+        b.acquire(api_key=None)
+    assert c.slept == []
+
+    b.acquire(api_key="key-A")
+    assert len(c.slept) == 1
+
+
+def test_invalid_init_parameters():
+    """ValueError is raised when rate or per_seconds is zero or negative."""
+    with pytest.raises(ValueError, match="rate must be greater than 0"):
+        TokenBucket(rate=0)
+    with pytest.raises(ValueError, match="rate must be greater than 0"):
+        TokenBucket(rate=-5)
+    with pytest.raises(ValueError, match="per_seconds must be greater than 0"):
+        TokenBucket(per_seconds=0)
+    with pytest.raises(ValueError, match="per_seconds must be greater than 0"):
+        TokenBucket(per_seconds=-10.0)
+
+
+def test_whitespace_api_key_uses_unauthenticated_rate():
+    """Empty or whitespace-only API keys fall back to unauthenticated limit (5)."""
+    c = FakeClock()
+    b = TokenBucket(api_key="   ", clock=c.time, sleep=c.sleep)
+    assert b.get_rate() == 5
+    assert b.get_rate("") == 5
+
+
+def test_instance_default_key_vs_acquire_override():
+    """acquire() uses instance default_api_key when None, or explicit override when passed."""
+    c = FakeClock()
+    b = TokenBucket(api_key="default-key", clock=c.time, sleep=c.sleep)
+    assert b.get_rate() == 50
+    assert b.get_rate("override-key") == 50
+    assert b.get_rate(None) == 50
+
+    b.acquire()
+    assert pytest.approx(b.get_tokens("default-key")) == 49.0
+    assert pytest.approx(b.get_tokens("override-key")) == 50.0
+
+
+def test_fractional_token_refill_and_wait_time():
+    """Exact boundary test: fractional tokens refill proportionally and sleep required deficit."""
+    c = FakeClock()
+    b = TokenBucket(rate=5, per_seconds=30.0, clock=c.time, sleep=c.sleep)
+
+    # Exhaust all 5 tokens
+    for _ in range(5):
+        b.acquire()
+    assert pytest.approx(b.get_tokens()) == 0.0
+
+    # Wait 3 seconds -> 3 / 30 * 5 = 0.5 tokens refilled
+    c.now += 3.0
+    assert pytest.approx(b.get_tokens()) == 0.5
+
+    # Acquiring now requires 0.5 token deficit -> 0.5 * (30 / 5) = 3.0 seconds sleep
+    b.acquire()
+    assert len(c.slept) == 1
+    assert pytest.approx(c.slept[0]) == 3.0
+    assert pytest.approx(b.get_tokens()) == 0.0
+
+
+def test_clock_moving_backwards_handled_gracefully():
+    """Clock jump backwards (NTP drift) does not crash or corrupt token counts."""
+    c = FakeClock()
+    c.now = 100.0
+    b = TokenBucket(rate=5, per_seconds=30.0, clock=c.time, sleep=c.sleep)
+    b.acquire()
+
+    # Move clock back to 50.0
+    c.now = 50.0
+    assert b.get_tokens() >= 0.0
+    b.acquire()
+    assert c.slept == []
+
+
+def test_tokens_capped_at_capacity():
+    """Token accumulation is capped at maximum capacity even after long idle periods."""
+    c = FakeClock()
+    b = TokenBucket(rate=5, per_seconds=30.0, clock=c.time, sleep=c.sleep)
+    c.now += 1000.0
+    assert pytest.approx(b.get_tokens()) == 5.0
+
+
+def test_concurrent_acquires():
+    """Thread safety: concurrent acquires from multiple threads maintain correct counts."""
+    import threading
+
+    c = FakeClock()
+    b = TokenBucket(rate=100, per_seconds=30.0, clock=c.time, sleep=c.sleep)
+
+    threads = []
+    for _ in range(10):
+        t = threading.Thread(target=lambda: [b.acquire() for _ in range(10)])
+        threads.append(t)
+        t.start()
+
+    for t in threads:
+        t.join()
+
+    assert pytest.approx(b.get_tokens()) == 0.0
+    assert c.slept == []
+
+
+def test_lock_released_during_sleep_across_keys():
+    """Sleeping for one rate-limited key does not lock or block acquisitions for another key."""
+    import threading
+    import time
+
+    c = FakeClock()
+    b = TokenBucket(rate=1, per_seconds=10.0, clock=c.time, sleep=c.sleep)
+
+    # Exhaust keyA
+    b.acquire(api_key="keyA")
+
+    key_b_acquired = False
+
+    def acquire_key_a():
+        # Will block and sleep for keyA
+        b.acquire(api_key="keyA")
+
+    def acquire_key_b():
+        nonlocal key_b_acquired
+        time.sleep(0.01)
+        b.acquire(api_key="keyB")
+        key_b_acquired = True
+
+    t_a = threading.Thread(target=acquire_key_a)
+    t_b = threading.Thread(target=acquire_key_b)
+
+    t_a.start()
+    t_b.start()
+
+    t_b.join(timeout=1.0)
+    assert key_b_acquired is True
+    t_a.join()
+
+
+def test_acquire_terminates_with_non_integer_rate_and_window():
+    """Floating-point round-trip in wait_time must not cause infinite sleep loop.
+
+    wait_time = deficit * (per_seconds / rate) is computed so that the following
+    refill should restore exactly 1.0 token. But (per_seconds/rate)*(rate/per_seconds)
+    is not always exactly 1.0 in IEEE-754. Without a small epsilon in the >= 1.0 check,
+    the bucket loops forever on infinitesimally small sleeps. Guard with a bounded
+    iteration count to catch any regression.
+    """
+    c = FakeClock()
+    b = TokenBucket(rate=3, per_seconds=10.0, clock=c.time, sleep=c.sleep)
+    # Acquire 10 tokens — the first 3 are free, the rest require sleeping.
+    for _ in range(10):
+        b.acquire()
+    # Must have completed without hanging; sleep count should be finite and bounded.
+    assert len(c.slept) == 7  # 10 - 3 (initial burst) = 7 sleeps
+    assert all(s > 0 for s in c.slept)
