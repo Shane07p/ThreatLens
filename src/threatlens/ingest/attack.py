@@ -178,13 +178,18 @@ def _belongs_to_edges(
 
 
 def _relationship_edges(
-    objects: list[dict], by_stix: dict[str, Node], source: str
+    objects: list[dict], by_stix: dict[str, Node], out_of_scope_refs: set[str], source: str
 ) -> tuple[list[Edge], int]:
     """Turn STIX relationship objects into edges.
 
     The kind pair matters as well as the type: `uses` means one thing from an actor to
     a technique and another from an actor to a piece of software, so both endpoints are
     checked before an edge kind is chosen.
+
+    `out_of_scope_refs` holds the STIX ids of objects present in the bundle whose *type*
+    this schema does not model. It is what separates an edge we chose not to model from
+    an edge we lost, and only the second is counted. An id absent from the bundle
+    entirely is not out of scope — it is a broken reference, and it counts.
     """
     edges: list[Edge] = []
     skipped = 0
@@ -196,8 +201,18 @@ def _relationship_edges(
         if rel_type not in MODELLED_RELATIONSHIP_TYPES:
             continue  # out of scope, not skipped
 
-        src = by_stix.get(obj.get("source_ref", ""))
-        dst = by_stix.get(obj.get("target_ref", ""))
+        src_ref, dst_ref = obj.get("source_ref", ""), obj.get("target_ref", "")
+
+        # An endpoint of a type we never model is out of scope, exactly like an
+        # unmodelled relationship_type above. ATT&CK v19.2 has 1,318 `uses` edges
+        # pointing at `campaign` objects; counting those made the real bundle report
+        # 1,723 losses when 2 objects were actually lost, and a loss alarm that reads
+        # 1,723 on a healthy bundle is one nobody looks at again.
+        if src_ref in out_of_scope_refs or dst_ref in out_of_scope_refs:
+            continue
+
+        src = by_stix.get(src_ref)
+        dst = by_stix.get(dst_ref)
         if src is None or dst is None:
             # One end was filtered out (retired, or missing an ATT&CK id), so the edge
             # goes with it. An edge to a node that does not exist breaks traversal.
@@ -241,8 +256,16 @@ def parse_bundle(path: Path) -> Graph:
         n.attrs["shortname"]: n for n in nodes if n.kind == "tactic" and n.attrs.get("shortname")
     }
 
+    # Objects the schema has no kind for. A relationship touching one of these is a
+    # modelling boundary, not a loss, so it must not reach the skipped count.
+    out_of_scope_refs = {
+        obj["id"]
+        for obj in objects
+        if obj.get("id") and obj.get("type") not in STIX_KIND and obj.get("type") != "relationship"
+    }
+
     belongs_to, skipped_phases = _belongs_to_edges(objects, by_stix, tactic_by_shortname, source)
-    relationships, skipped_rels = _relationship_edges(objects, by_stix, source)
+    relationships, skipped_rels = _relationship_edges(objects, by_stix, out_of_scope_refs, source)
 
     return Graph(
         nodes=nodes,

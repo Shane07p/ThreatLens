@@ -114,10 +114,14 @@ LIMIT %(node_budget)s;
 ```
 
 Notes:
-- **Cycle guard is not optional.** `MITIGATED_BY` + `USES` + `CHAINS_TO` produce cycles;
-  without `NOT e.dst = ANY(w.path)` this never terminates.
+- **The cycle guard bounds cost, not termination** — see [decisions.md](decisions.md) D17.
+  `max_depth` is what makes a cyclic graph terminate; `NOT e.dst = ANY(w.path)` is what keeps
+  the intermediate `walk` relation from reaching tens of millions of rows on a dense
+  `CHAINS_TO` cycle. Removing it changes no results, which is why it needs a timing test.
 - Cost is inverse weight, so high-confidence edges are cheaper — `ORDER BY cost` gives you
-  the strongest paths first when the budget truncates.
+  the strongest paths first when the budget truncates. Apply `DISTINCT ON` in a subquery and
+  `LIMIT` outside it: `DISTINCT ON` forces `ORDER BY` to lead with the distinct key, so a
+  single-level query truncates by id and silently keeps the alphabetically first N.
 - Defaults: `max_depth=3`, `node_budget=200`. Tune in `config.py`, not inline.
 
 ## The `CHAINS_TO` derivation

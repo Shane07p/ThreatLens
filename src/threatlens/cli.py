@@ -768,6 +768,107 @@ def show(
         console.print(table)
 
 
+@app.command("path")
+def path_cmd(
+    node_id: str = typer.Argument(
+        ..., help="Starting node — a CVE or technique (e.g. CVE-2021-44228 or T1190)"
+    ),
+    depth: int | None = typer.Option(None, "--depth", help="Override the configured max depth"),
+    json_output: bool = typer.Option(False, "--json", "-j", help="Emit the chains as JSON"),
+) -> None:
+    """Walk the graph from a CVE or technique and print the chains it reaches.
+
+    Answers the question the whole project is built around: this CVE turned up — what does
+    it let an attacker do, what stage of an intrusion is that, and what stops it. Every
+    line is a route through stored edges, so each hop is a row somebody can check.
+
+    Raises typer.Exit(code=1) if the starting node is not in the graph.
+    """
+    from threatlens.config import get_settings
+    from threatlens.graph.store import get_engine, get_node
+    from threatlens.graph.traverse import PATH_EDGE_KINDS, chains, traverse
+
+    resolved = node_id if ":" in node_id else _guess_id(node_id)
+    settings = get_settings()
+    max_depth = depth if depth is not None else settings.max_depth
+
+    try:
+        with get_engine().connect() as conn:
+            start = get_node(conn, resolved)
+            if start is None:
+                err_console.print(f"[red]✖ Not found:[/red] {resolved}")
+                err_console.print(
+                    "[yellow]Suggestion:[/yellow] Run: threatlens ingest attack, "
+                    "then threatlens ingest cves"
+                )
+                raise typer.Exit(code=1)
+
+            hops = traverse(
+                conn,
+                [start.id],
+                PATH_EDGE_KINDS,
+                max_depth=max_depth,
+                node_budget=settings.node_budget,
+            )
+    except typer.Exit:
+        raise
+    except Exception as exc:
+        err_console.print(f"[red]✖ Database error:[/red] {exc}")
+        err_console.print("[yellow]Suggestion:[/yellow] Did you mean threatlens db init?")
+        raise typer.Exit(code=1) from exc
+
+    # Longest shape first: a CVE that reaches a mitigation is the full story, and showing
+    # the tactic chain as well would repeat its first three hops for no added information.
+    shapes = (
+        [["cve", "technique", "tactic"], ["cve", "technique", "mitigation"]]
+        if start.kind == "cve"
+        else [["technique", "tactic"], ["technique", "mitigation"]]
+    )
+    found = {" → ".join(shape): chains(hops, shape) for shape in shapes}
+
+    if json_output:
+        print(
+            json.dumps(
+                {
+                    "start": start.id,
+                    "max_depth": max_depth,
+                    "node_budget": settings.node_budget,
+                    "reached": len(hops),
+                    "chains": {
+                        label: [[n.id for n in chain] for chain in found_chains]
+                        for label, found_chains in found.items()
+                    },
+                },
+                indent=2,
+            )
+        )
+        return
+
+    header = f"[bold cyan]{start.id}[/bold cyan] — [bold]{start.name}[/bold]\n"
+    header += f"[dim]{start.source_url}[/dim]"
+    console.print(Panel(header, title="Path from", expand=False))
+
+    if not any(found.values()):
+        console.print(
+            f"[yellow]No chains found within depth {max_depth}.[/yellow] "
+            f"Reached {len(hops)} node(s)."
+        )
+        return
+
+    for label, found_chains in found.items():
+        if not found_chains:
+            continue
+        table = Table(title=label, show_header=True, header_style="bold blue")
+        table.add_column("Chain", style="cyan", no_wrap=True)
+        table.add_column("Names")
+        for chain in found_chains:
+            table.add_row(
+                " → ".join(n.id for n in chain),
+                " → ".join(n.name for n in chain),
+            )
+        console.print(table)
+
+
 def _guess_id(external_id: str) -> str:
     """Resolve a bare external identifier to a canonical prefixed node ID.
 

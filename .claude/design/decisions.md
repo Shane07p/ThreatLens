@@ -247,3 +247,28 @@ GitHub Actions runs `ruff check`, `ruff format --check`, and `pytest -m "not eva
 **Why exclude `eval`:** those tests call a paid API and are non-deterministic. A pipeline that
 goes red because a model phrased something differently — or because someone's key ran out —
 teaches the team to ignore the pipeline. Eval runs are deliberate and manual.
+
+---
+
+### D17 — The traversal cycle guard is a cost bound, not a termination bound
+
+[graph-schema.md](graph-schema.md) says of `NOT e.dst = ANY(w.path)`: *"Cycle guard is not
+optional — without this it never terminates."* That reasoning is wrong, and the correction
+matters because it changes what has to be tested.
+
+`max_depth` already bounds the recursion; a cyclic graph terminates without the guard. And a
+route that revisits a node always costs more than the route that reached it first, so
+`DISTINCT ON (id) ... ORDER BY cost` discards the revisiting row regardless. Removing the
+guard leaves **every assertion about results passing** — proven by mutation: deleting it and
+re-running the traversal suite was green.
+
+What it actually bounds is the size of the intermediate `walk` relation. Six fully-connected
+nodes at `max_depth=10` is `6 × 5^10` rows — tens of millions out of thirty edges. With the
+guard a path cannot repeat a node, so nothing beyond six hops survives.
+
+**Consequences:**
+- The guard stays, for the reason above rather than the one originally written down.
+- The test that protects it asserts *time*, not results: a dense cycle under
+  `pytest.mark.timeout`. A results-based cycle test passes either way and proves nothing.
+- `CHAINS_TO` is derived from actor co-occurrence and is symmetric before kill-chain
+  ordering is applied, so dense cycles are the ordinary shape here, not a corner case.
