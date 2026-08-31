@@ -351,6 +351,16 @@ def fetch_url(
 
             raw_cl = response.headers.get("content-length")
             expected_bytes = int(raw_cl) if raw_cl and raw_cl.isdigit() else None
+
+            # Content-Length describes the *encoded* transfer. httpx decodes gzip and br
+            # transparently, so on a compressed response the bytes we write are the decoded
+            # ones and the two are not comparable — MITRE serves the ATT&CK bundle as 6 MB
+            # gzipped and 54 MB decoded, and comparing them rejected every real snapshot.
+            # A truncated compressed download is caught later instead: the sha256 will not
+            # reproduce, and the parser fails on incomplete JSON.
+            encoding = response.headers.get("content-encoding", "").strip().lower()
+            if encoding and encoding != "identity":
+                expected_bytes = None
             etag = response.headers.get("etag")
             last_modified = response.headers.get("last-modified")
 
