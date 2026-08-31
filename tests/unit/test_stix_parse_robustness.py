@@ -409,7 +409,11 @@ def test_parses_a_large_synthetic_bundle(tmp_path):
 @pytest.mark.slow
 @pytest.mark.skipif(not REAL_BUNDLE.exists(), reason="real bundle not downloaded")
 def test_real_bundle_invariants():
-    """Runs only when the snapshot is present. The two hard gates from the phase doc."""
+    """The hard gates, against the actual snapshot rather than a hand-built bundle.
+
+    Twelve inline objects cannot show that the parser survives 26,000 real ones. This is
+    the only test that reads the file the graph is really built from.
+    """
     g = parse_bundle(REAL_BUNDLE)
     ids = {n.id for n in g.nodes}
 
@@ -420,4 +424,122 @@ def test_real_bundle_invariants():
     dangling = [e for e in g.edges if e.src not in ids or e.dst not in ids]
     assert dangling == [], f"{len(dangling)} dangling edges"
 
-    assert len([n for n in g.nodes if n.kind == "tactic"]) == 14
+
+@pytest.mark.slow
+@pytest.mark.skipif(not REAL_BUNDLE.exists(), reason="real bundle not downloaded")
+def test_real_bundle_yields_every_live_tactic():
+    """Asserts correspondence with the bundle, not a fixed number.
+
+    The phase doc says "exactly 14 tactics". That was true when it was written and is not
+    now: v19.2 renamed TA0005 Defense Evasion to Stealth and split TA0112 Defense
+    Impairment out of it, making 15. A pinned count fails on every upstream release for a
+    reason that has nothing to do with this parser, and the third time that happens
+    someone deletes the test.
+
+    What must hold for any release is that every live tactic object in the bundle becomes
+    a tactic node. The band below is only there so a catastrophic misread — zero tactics,
+    or every object treated as one — still fails loudly.
+    """
+    raw = json.loads(REAL_BUNDLE.read_text(encoding="utf-8"))
+    expected = {
+        o["id"]
+        for o in raw["objects"]
+        if o.get("type") == "x-mitre-tactic"
+        and not (o.get("revoked") or o.get("x_mitre_deprecated"))
+    }
+
+    g = parse_bundle(REAL_BUNDLE)
+    parsed = {n.stix_id for n in g.nodes if n.kind == "tactic"}
+
+    assert parsed == expected
+    assert 10 <= len(parsed) <= 25, f"{len(parsed)} tactics is not a plausible enterprise matrix"
+
+
+@pytest.mark.slow
+@pytest.mark.skipif(not REAL_BUNDLE.exists(), reason="real bundle not downloaded")
+def test_real_bundle_loses_almost_nothing():
+    """The skipped count is a data-loss alarm, and an alarm has to be readable.
+
+    On v19.2 this is 605: 446 revoked or deprecated objects, plus the edges that pointed
+    at them. Before out-of-scope relationships were separated out it read 1,723, three
+    quarters of which were `uses` edges to `campaign` objects — a type this schema does
+    not model, and not a loss at all.
+
+    The bound is deliberately loose. It is here to catch a parser that starts dropping
+    thousands of objects, not to pin a number that shifts with every release.
+    """
+    g = parse_bundle(REAL_BUNDLE)
+    total = len(json.loads(REAL_BUNDLE.read_text(encoding="utf-8"))["objects"])
+    assert g.skipped < total * 0.05, f"skipped {g.skipped} of {total} objects"
+
+
+# --- ignored is not lost --------------------------------------------------------------
+
+
+def _actor(ext_id: str) -> dict:
+    return {
+        "type": "intrusion-set",
+        "id": f"intrusion-set--{ext_id}",
+        "name": f"Actor {ext_id}",
+        "external_references": [{"source_name": "mitre-attack", "external_id": ext_id, "url": "u"}],
+    }
+
+
+def _uses(src: str, dst: str) -> dict:
+    return {
+        "type": "relationship",
+        "id": f"relationship--{src}-{dst}",
+        "relationship_type": "uses",
+        "source_ref": src,
+        "target_ref": dst,
+    }
+
+
+def test_relationships_to_unmodelled_object_types_are_not_counted_as_skipped(tmp_path):
+    """The skipped count is a data-loss alarm, so out-of-scope must not inflate it.
+
+    ATT&CK v19.2 carries 1,318 `uses` relationships pointing at `campaign` objects, a STIX
+    type this schema does not model. Counting them as skipped made the real bundle report
+    1,723 losses when only 2 objects were actually lost — an alarm nobody can read.
+    """
+    objs = [
+        tactic("execution", "TA0002"),
+        technique("T1059", ["execution"]),
+        _actor("G0001"),
+        {"type": "campaign", "id": "campaign--c1", "name": "Some Campaign"},
+        _uses("intrusion-set--G0001", "campaign--c1"),
+    ]
+    g = parse_bundle(write_bundle(tmp_path, objs))
+
+    assert g.skipped == 0, "a relationship to a type we never model is out of scope, not lost"
+    assert {n.id for n in g.nodes} == {"tactic:TA0002", "technique:T1059", "actor:G0001"}
+
+
+def test_relationships_to_a_filtered_modelled_object_are_still_counted_as_skipped(tmp_path):
+    """The other half of the distinction. A revoked technique IS a type we model, so an
+    edge to it is real loss and has to stay visible."""
+    objs = [
+        tactic("execution", "TA0002"),
+        technique("T1059", ["execution"]),
+        technique("T9999", ["execution"], revoked=True),
+        _actor("G0001"),
+        _uses("intrusion-set--G0001", "attack-pattern--T9999"),
+    ]
+    g = parse_bundle(write_bundle(tmp_path, objs))
+
+    # 1 for the revoked technique itself, 1 for the edge that pointed at it.
+    assert g.skipped == 2
+    assert all("T9999" not in e.dst for e in g.edges)
+
+
+def test_a_relationship_to_an_id_absent_from_the_bundle_is_counted_as_skipped(tmp_path):
+    """An unresolvable reference is a broken bundle, not a modelling choice. Treating it
+    as out of scope would hide a genuinely truncated upstream release."""
+    objs = [
+        tactic("execution", "TA0002"),
+        technique("T1059", ["execution"]),
+        _actor("G0001"),
+        _uses("intrusion-set--G0001", "attack-pattern--DOES-NOT-EXIST"),
+    ]
+    g = parse_bundle(write_bundle(tmp_path, objs))
+    assert g.skipped == 1
