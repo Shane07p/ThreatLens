@@ -543,6 +543,109 @@ def ingest_attack_cmd() -> None:
     console.print(f"[green]✔ Inserted[/green] {n_nodes} nodes, {n_edges} edges")
 
 
+@ingest_app.command("cves")
+def ingest_cves_cmd(
+    kev_file: Path | None = typer.Option(  # noqa: B008
+        None, "--kev-file", help="Path to CISA KEV catalog JSON for KEV flagging"
+    ),
+) -> None:
+    """Parse the NVD CVE snapshot and populate CVE nodes in the graph.
+
+    Reads data/raw/nvd-scoped.json, parses each CVE record into a Node, and
+    upserts into Postgres. If a CISA KEV catalog is available (via --kev-file
+    or auto-detected at data/raw/kev-catalog.json), matching CVEs get
+    ``attrs.kev = true``.
+
+    Raises typer.Exit(code=1) if the snapshot file is missing.
+    """
+    from threatlens.graph.store import get_engine
+    from threatlens.ingest.nvd import ingest_cves, load_kev_ids
+
+    data_raw, manifest = _get_data_paths()
+    path = data_raw / "nvd-scoped.json"
+    if not path.exists():
+        err_console.print(f"[red]✖ Snapshot missing at {path}[/red]")
+        err_console.print("[yellow]Suggestion:[/yellow] Run: threatlens fetch nvd")
+        raise typer.Exit(code=1)
+
+    # KEV catalog — try explicit flag, then auto-detect, then skip
+    kev_ids: set[str] | None = None
+    kev_path = kev_file or data_raw / "kev-catalog.json"
+    if kev_path.exists():
+        kev_ids = load_kev_ids(kev_path)
+        console.print(f"[dim]Loaded {len(kev_ids)} KEV CVE IDs from {kev_path.name}[/dim]")
+    else:
+        console.print("[dim]No KEV catalog found — CVEs will not be KEV-flagged[/dim]")
+
+    sha = ""
+    if manifest.exists():
+        try:
+            manifest_data = json.loads(manifest.read_text(encoding="utf-8"))
+            sha = manifest_data.get(path.name, {}).get("sha256", "")
+        except json.JSONDecodeError:
+            sha = ""
+
+    try:
+        with get_engine().begin() as conn:
+            n_nodes, kev_count = ingest_cves(path, sha, conn, kev_ids=kev_ids)
+    except Exception as exc:
+        err_console.print(f"[red]✖ Ingestion failed:[/red] {exc}")
+        err_console.print(
+            "[yellow]Suggestion:[/yellow] Verify database schema with: threatlens db init"
+        )
+        raise typer.Exit(code=1) from exc
+
+    msg = f"[green]✔ Inserted[/green] {n_nodes} CVE nodes"
+    if kev_count:
+        msg += f" ({kev_count} KEV-flagged)"
+    console.print(msg)
+
+
+@ingest_app.command("mappings")
+def ingest_mappings_cmd() -> None:
+    """Parse the CVE→ATT&CK mappings snapshot and populate ENABLES edges.
+
+    Reads data/raw/Att&ckToCveMappings.csv and creates weighted ENABLES edges
+    from CVE nodes to technique nodes. Edges whose target technique is absent
+    from the graph are dropped and counted — a large drop count means the
+    ATT&CK and mappings snapshots are out of step.
+
+    Raises typer.Exit(code=1) if the snapshot file is missing.
+    """
+    from threatlens.graph.store import get_engine
+    from threatlens.ingest.mappings import ingest_mappings
+
+    data_raw, manifest = _get_data_paths()
+    path = data_raw / "Att&ckToCveMappings.csv"
+    if not path.exists():
+        err_console.print(f"[red]✖ Snapshot missing at {path}[/red]")
+        err_console.print("[yellow]Suggestion:[/yellow] Run: threatlens fetch mappings")
+        raise typer.Exit(code=1)
+
+    sha = ""
+    if manifest.exists():
+        try:
+            manifest_data = json.loads(manifest.read_text(encoding="utf-8"))
+            sha = manifest_data.get(path.name, {}).get("sha256", "")
+        except json.JSONDecodeError:
+            sha = ""
+
+    try:
+        with get_engine().begin() as conn:
+            n_edges, dropped = ingest_mappings(path, sha, conn)
+    except Exception as exc:
+        err_console.print(f"[red]✖ Ingestion failed:[/red] {exc}")
+        err_console.print(
+            "[yellow]Suggestion:[/yellow] Verify database schema with: threatlens db init"
+        )
+        raise typer.Exit(code=1) from exc
+
+    msg = f"[green]✔ Inserted[/green] {n_edges} ENABLES edges"
+    if dropped:
+        msg += f" [yellow](dropped {dropped} — absent techniques/CVEs)[/yellow]"
+    console.print(msg)
+
+
 @app.command("stats")
 def stats(
     json_output: bool = typer.Option(
