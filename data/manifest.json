@@ -1,0 +1,10 @@
+{
+  "enterprise-attack.json": {
+    "bytes": 53835637,
+    "etag": "W/\"49e6c58705450b6d896c7091fe855fe2abae3dc529cb10b4b3022a9cdb9df354\"",
+    "fetched_at": "2026-08-31T07:50:26.195162+00:00",
+    "sha256": "dc1639caa5501d720e280cf1cbd8fbe009884a0c9b3e6e9ed9d0c25166c3d8f4",
+    "timestamp": "2026-08-31T07:50:26.195162+00:00",
+    "url": "https://raw.githubusercontent.com/mitre-attack/attack-stix-data/master/enterprise-attack/enterprise-attack.json"
+  }
+}
