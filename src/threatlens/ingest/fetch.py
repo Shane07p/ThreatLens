@@ -35,6 +35,11 @@ MAPPINGS_URL = (
 )
 
 CISA_KEV_URL = "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json"
+
+# The KEV catalog is written here so `ingest cves` can read it back and stamp
+# attrs.kev. Fetching it only into memory to pick which CVEs to pull leaves the
+# triage signal unrecoverable, and the flagging silently never fires.
+KEV_FILENAME = "kev-catalog.json"
 NVD_ENDPOINT = "https://services.nvd.nist.gov/rest/json/cves/2.0"
 CVE_ID_PATTERN = re.compile(r"^CVE-\d{4}-\d{4,}$", re.IGNORECASE)
 
@@ -442,6 +447,50 @@ def collect_scoped_cve_ids(
     return sorted(list(valid_cves)), sorted(list(invalid_cves))
 
 
+def _get_kev_catalog(client: httpx.Client, kev_url: str) -> dict:
+    """Download the CISA KEV catalog. Returns the parsed JSON object."""
+    resp = client.get(kev_url)
+    resp.raise_for_status()
+    return resp.json()
+
+
+def _write_kev_catalog(
+    kev_data: dict | None,
+    dest: Path,
+    kev_url: str,
+    manifest_path: Path | None,
+) -> None:
+    """Persist the KEV catalog next to the NVD snapshot and pin it in the manifest.
+
+    Overwrites unconditionally, unlike the other fetchers. The catalog is a derived
+    copy of what this run actually used, not a snapshot a user chose to keep, so
+    refusing to overwrite it would leave the NVD pull and the KEV flags describing
+    two different days.
+
+    A missing or malformed catalog is not fatal: the CVE pull still succeeds, and
+    ingestion reports that nothing was KEV-flagged rather than inventing flags.
+    """
+    if not kev_data:
+        logger.warning("no KEV catalog to write to %s; CVEs will not be KEV-flagged", dest)
+        return
+
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    with _atomic_write_path(dest) as tmp_p:
+        tmp_p.write_text(json.dumps(kev_data, indent=2) + "\n", encoding="utf-8")
+
+    if manifest_path:
+        update_manifest(
+            manifest_path,
+            dest.name,
+            {
+                "url": kev_url,
+                "sha256": sha256_file(dest),
+                "bytes": dest.stat().st_size,
+                "cve_count": len(kev_data.get("vulnerabilities", [])),
+            },
+        )
+
+
 def fetch_scoped_nvd(
     dest: Path,
     mappings_path: Path,
@@ -489,6 +538,13 @@ def fetch_scoped_nvd(
         close_client = True
 
     try:
+        # Resolved here rather than inside collect_scoped_cve_ids so the catalog can be
+        # written to disk on the way past. Passing it down means the collector skips its
+        # own fetch, so this costs no extra request.
+        if kev_data is None:
+            kev_data = _get_kev_catalog(client, kev_url)
+        _write_kev_catalog(kev_data, dest.parent / KEV_FILENAME, kev_url, manifest_path)
+
         cve_ids, _invalid_ids = collect_scoped_cve_ids(
             mappings_path=mappings_path,
             kev_url=kev_url,
