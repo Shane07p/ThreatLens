@@ -210,3 +210,54 @@ def neighbors(conn: Connection, node_id: str, kinds: list[str]) -> list[tuple[Ed
         )
         out.append((edge, _row_to_node(r)))
     return out
+
+
+# ── node_chunks operations ───────────────────────────────────────────────────
+
+_DELETE_NODE_CHUNKS = text("DELETE FROM node_chunks WHERE node_id = :node_id")
+
+_INSERT_CHUNK = text("""
+    INSERT INTO node_chunks (node_id, chunk_ix, text, embedding)
+    VALUES (:node_id, :chunk_ix, :text, CAST(:embedding AS vector))
+    ON CONFLICT (node_id, chunk_ix) DO UPDATE SET
+        text      = EXCLUDED.text,
+        embedding = EXCLUDED.embedding
+""")
+
+_COUNT_NODE_CHUNKS = text("SELECT count(*) FROM node_chunks")
+
+_NODES_WITH_DESCRIPTIONS = text("""
+    SELECT id, kind, external_id, stix_id, name, description, attrs, source_url
+    FROM nodes
+    WHERE description IS NOT NULL AND description != ''
+    ORDER BY id
+""")
+
+
+def delete_node_chunks(conn: Connection, node_id: str) -> int:
+    """Remove all chunks for a node. Returns the number of rows deleted."""
+    result = conn.execute(_DELETE_NODE_CHUNKS, {"node_id": node_id})
+    return result.rowcount
+
+
+def upsert_node_chunks(
+    conn: Connection,
+    chunks: Iterable[dict],
+) -> int:
+    """Insert or update node chunks. Each dict must have node_id, chunk_ix, text, embedding."""
+    rows = list(chunks)
+    if not rows:
+        return 0
+    conn.execute(_INSERT_CHUNK, rows)
+    return len(rows)
+
+
+def count_node_chunks(conn: Connection) -> int:
+    """Total number of rows in node_chunks."""
+    return conn.execute(_COUNT_NODE_CHUNKS).scalar_one()
+
+
+def nodes_with_descriptions(conn: Connection) -> list[Node]:
+    """All nodes that have a non-empty description (candidates for embedding)."""
+    rows = conn.execute(_NODES_WITH_DESCRIPTIONS)
+    return [_row_to_node(r) for r in rows]

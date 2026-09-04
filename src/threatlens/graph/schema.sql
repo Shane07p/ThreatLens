@@ -24,6 +24,9 @@ CREATE TABLE IF NOT EXISTS node_chunks (
     PRIMARY KEY (node_id, chunk_ix)
 );
 
+CREATE INDEX IF NOT EXISTS node_chunks_embedding_hnsw
+    ON node_chunks USING hnsw (embedding vector_cosine_ops);
+
 CREATE TABLE IF NOT EXISTS edges (
     src     text NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
     dst     text NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
