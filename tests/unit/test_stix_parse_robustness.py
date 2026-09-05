@@ -543,3 +543,75 @@ def test_a_relationship_to_an_id_absent_from_the_bundle_is_counted_as_skipped(tm
     ]
     g = parse_bundle(write_bundle(tmp_path, objs))
     assert g.skipped == 1
+
+
+# --- kill-chain order -----------------------------------------------------------------
+
+
+def _matrix(tactic_ids: list[str]) -> dict:
+    return {
+        "type": "x-mitre-matrix",
+        "id": "x-mitre-matrix--enterprise",
+        "name": "Enterprise ATT&CK",
+        "tactic_refs": [f"x-mitre-tactic--{t}" for t in tactic_ids],
+    }
+
+
+def test_tactic_order_comes_from_the_matrix(tmp_path):
+    """Chaining techniques needs to know which tactic comes first, and nothing on a
+    tactic object says. The matrix object lists tactic_refs in kill-chain order, which is
+    the only place the sequence is recorded."""
+    objs = [
+        tactic("impact", "TA0040"),
+        tactic("reconnaissance", "TA0043"),
+        tactic("execution", "TA0002"),
+        _matrix(["TA0043", "TA0002", "TA0040"]),
+    ]
+    g = parse_bundle(write_bundle(tmp_path, objs))
+    order = {n.external_id: n.attrs["order"] for n in g.nodes if n.kind == "tactic"}
+    assert order == {"TA0043": 0, "TA0002": 1, "TA0040": 2}
+
+
+def test_tactic_order_is_not_the_order_objects_appear_in(tmp_path):
+    """The bundle lists tactics in an arbitrary order. Using it would silently produce a
+    chain direction that looks plausible and is wrong."""
+    objs = [
+        tactic("impact", "TA0040"),
+        tactic("reconnaissance", "TA0043"),
+        _matrix(["TA0043", "TA0040"]),
+    ]
+    g = parse_bundle(write_bundle(tmp_path, objs))
+    order = {n.external_id: n.attrs["order"] for n in g.nodes if n.kind == "tactic"}
+    assert order["TA0043"] < order["TA0040"]
+
+
+def test_a_tactic_absent_from_the_matrix_has_no_order(tmp_path):
+    """Never invent a position. An unplaced tactic is unplaced, and chain derivation has
+    to skip it rather than treat it as first."""
+    objs = [tactic("execution", "TA0002"), tactic("orphan", "TA9999"), _matrix(["TA0002"])]
+    g = parse_bundle(write_bundle(tmp_path, objs))
+    order = {n.external_id: n.attrs.get("order") for n in g.nodes if n.kind == "tactic"}
+    assert order["TA0002"] == 0
+    assert order["TA9999"] is None
+
+
+def test_a_bundle_with_no_matrix_leaves_every_order_unset(tmp_path):
+    objs = [tactic("execution", "TA0002"), tactic("impact", "TA0040")]
+    g = parse_bundle(write_bundle(tmp_path, objs))
+    assert all(n.attrs.get("order") is None for n in g.nodes if n.kind == "tactic")
+
+
+@pytest.mark.slow
+@pytest.mark.skipif(not REAL_BUNDLE.exists(), reason="real bundle not downloaded")
+def test_real_bundle_orders_every_tactic():
+    """Every live tactic must be placed, or chain derivation silently drops techniques."""
+    g = parse_bundle(REAL_BUNDLE)
+    tactics = [n for n in g.nodes if n.kind == "tactic"]
+    orders = [n.attrs.get("order") for n in tactics]
+
+    assert all(o is not None for o in orders), "a tactic is missing from the matrix"
+    assert sorted(orders) == list(range(len(tactics))), "orders must be a dense 0..n-1 range"
+
+    by_ext = {n.external_id: n.attrs["order"] for n in tactics}
+    assert by_ext["TA0043"] == 0, "Reconnaissance is the first tactic in the kill chain"
+    assert by_ext["TA0040"] == max(orders), "Impact is the last"

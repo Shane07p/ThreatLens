@@ -85,17 +85,44 @@ def _collection_version(objects: list[dict]) -> str:
     return "unknown"
 
 
-def _node_attrs(obj: dict, kind: str) -> dict:
+def _tactic_order(objects: list[dict]) -> dict[str, int]:
+    """Map each tactic's STIX id to its position in the kill chain.
+
+    Nothing on a tactic object records where it sits in the sequence. The matrix object
+    is the only place the order appears, as `tactic_refs` listed front to back, so
+    reconnaissance first and impact last.
+
+    Deriving it rather than hard-coding a list matters: v19.2 renamed Defense Evasion to
+    Stealth and split Defense Impairment out of it, so any list written before that
+    release is now both wrong and the wrong length.
+
+    Returns an empty map when the bundle carries no matrix, which leaves every tactic
+    unplaced rather than guessing an order.
+    """
+    matrix = next((o for o in objects if o.get("type") == "x-mitre-matrix"), None)
+    if matrix is None:
+        return {}
+    return {ref: i for i, ref in enumerate(matrix.get("tactic_refs", []))}
+
+
+def _node_attrs(obj: dict, kind: str, tactic_order: dict[str, int]) -> dict:
     """Per-kind extras worth keeping on the node.
 
     A tactic's shortname is what kill_chain_phases refers to it by, so keeping it here
     means the technique-to-tactic lookup can be derived from the nodes rather than
-    threaded out of the parser separately.
+    threaded out of the parser separately. Its order is kept for the same reason —
+    chain derivation needs to know which of two tactics comes first, and reading it off
+    the node avoids re-parsing the bundle at derivation time.
     """
     if kind == "technique":
         return {"is_subtechnique": bool(obj.get("x_mitre_is_subtechnique", False))}
     if kind == "tactic":
-        return {"shortname": obj.get("x_mitre_shortname", "")}
+        return {
+            "shortname": obj.get("x_mitre_shortname", ""),
+            # None, not a sentinel index. A tactic absent from the matrix has no place in
+            # the kill chain, and a fabricated 0 would read as "first".
+            "order": tactic_order.get(obj.get("id", "")),
+        }
     return {}
 
 
@@ -107,6 +134,7 @@ def _build_nodes(objects: list[dict]) -> tuple[list[Node], int]:
     """
     nodes: dict[str, Node] = {}
     skipped = 0
+    tactic_order = _tactic_order(objects)
 
     for obj in objects:
         kind = STIX_KIND.get(obj.get("type", ""))
@@ -130,7 +158,7 @@ def _build_nodes(objects: list[dict]) -> tuple[list[Node], int]:
             source_url=url,
             description=obj.get("description"),
             stix_id=obj.get("id"),
-            attrs=_node_attrs(obj, kind),
+            attrs=_node_attrs(obj, kind, tactic_order),
         )
         # Keyed by id, so two objects claiming the same ATT&CK id collapse to one node
         # rather than producing a duplicate the database would then reject.
