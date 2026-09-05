@@ -364,3 +364,124 @@ def test_chains_are_ordered_cheapest_first(conn):
     # and it must be the one through the strong edge.
     result = chains(hops, ["cve", "technique", "tactic"])
     assert [n.id for n in result[0]] == ["cve:C1", "technique:Tstrong", "tactic:TA1"]
+
+
+# --- direction ------------------------------------------------------------------------
+
+
+def test_reverse_kinds_walk_from_destination_to_source(conn):
+    """`USES` is stored actor -> technique, but "who uses this technique" starts at the
+    technique. Without a reverse walk that question cannot be answered at all."""
+    build(
+        conn,
+        [node("actor:G1", "actor"), node("technique:T1")],
+        [edge("actor:G1", "technique:T1", "USES")],
+    )
+    hops = traverse(conn, ["technique:T1"], [], reverse_kinds=["USES"], max_depth=3, node_budget=10)
+    assert ids(hops) == ["technique:T1", "actor:G1"]
+
+
+def test_forward_and_reverse_kinds_walk_in_one_query(conn):
+    """The real shape: from a technique, reach its tactic forwards and its actors
+    backwards in a single traversal."""
+    build(
+        conn,
+        [node("actor:G1", "actor"), node("technique:T1"), node("tactic:TA1", "tactic")],
+        [
+            edge("actor:G1", "technique:T1", "USES"),
+            edge("technique:T1", "tactic:TA1", "BELONGS_TO"),
+        ],
+    )
+    hops = traverse(
+        conn,
+        ["technique:T1"],
+        ["BELONGS_TO"],
+        reverse_kinds=["USES"],
+        max_depth=3,
+        node_budget=10,
+    )
+    assert set(ids(hops)) == {"technique:T1", "tactic:TA1", "actor:G1"}
+
+
+def test_a_reverse_hop_records_its_path_and_depth(conn):
+    build(
+        conn,
+        [node("actor:G1", "actor"), node("technique:T1")],
+        [edge("actor:G1", "technique:T1", "USES")],
+    )
+    hops = traverse(conn, ["technique:T1"], [], reverse_kinds=["USES"], max_depth=3, node_budget=10)
+    actor = next(h for h in hops if h.node.id == "actor:G1")
+    assert actor.path == ("technique:T1", "actor:G1")
+    assert actor.depth == 1
+
+
+def test_a_kind_in_both_lists_is_walked_both_ways(conn):
+    """CHAINS_TO is directed, but "what is this technique adjacent to" wants both ends."""
+    build(
+        conn,
+        [node("technique:T1"), node("technique:T2"), node("technique:T3")],
+        [
+            edge("technique:T1", "technique:T2", "CHAINS_TO"),
+            edge("technique:T3", "technique:T1", "CHAINS_TO"),
+        ],
+    )
+    hops = traverse(
+        conn,
+        ["technique:T1"],
+        ["CHAINS_TO"],
+        reverse_kinds=["CHAINS_TO"],
+        max_depth=1,
+        node_budget=10,
+    )
+    assert set(ids(hops)) == {"technique:T1", "technique:T2", "technique:T3"}
+
+
+def test_reverse_edges_carry_their_weight_into_the_cost(conn):
+    """A weak reverse edge must rank below a strong one, exactly like a forward edge."""
+    build(
+        conn,
+        [node("actor:Gweak", "actor"), node("actor:Gstrong", "actor"), node("technique:T1")],
+        [
+            edge("actor:Gweak", "technique:T1", "USES", weight=0.1),
+            edge("actor:Gstrong", "technique:T1", "USES", weight=1.0),
+        ],
+    )
+    hops = traverse(conn, ["technique:T1"], [], reverse_kinds=["USES"], max_depth=1, node_budget=10)
+    assert ids(hops) == ["technique:T1", "actor:Gstrong", "actor:Gweak"]
+
+
+@pytest.mark.timeout(10)
+def test_a_reverse_walk_still_guards_against_cycles(conn):
+    """Walking an edge both ways makes every edge a two-node cycle, so the guard matters
+    more here than in a forward-only walk, not less."""
+    build(
+        conn,
+        [node("technique:T1"), node("technique:T2")],
+        [edge("technique:T1", "technique:T2", "CHAINS_TO")],
+    )
+    hops = traverse(
+        conn,
+        ["technique:T1"],
+        ["CHAINS_TO"],
+        reverse_kinds=["CHAINS_TO"],
+        max_depth=8,
+        node_budget=50,
+    )
+    assert set(ids(hops)) == {"technique:T1", "technique:T2"}
+    assert all(len(set(h.path)) == len(h.path) for h in hops)
+
+
+def test_no_reverse_kinds_is_unchanged_forward_only_behaviour(conn):
+    """Regression guard on the default. Every existing caller passes no reverse kinds."""
+    build(
+        conn,
+        [node("actor:G1", "actor"), node("technique:T1")],
+        [edge("actor:G1", "technique:T1", "USES")],
+    )
+    hops = traverse(conn, ["technique:T1"], ["USES"], max_depth=3, node_budget=10)
+    assert ids(hops) == ["technique:T1"]
+
+
+def test_empty_forward_and_empty_reverse_returns_nothing(conn):
+    build(conn, [node("technique:T1")], [])
+    assert traverse(conn, ["technique:T1"], [], reverse_kinds=[], max_depth=3, node_budget=10) == []
