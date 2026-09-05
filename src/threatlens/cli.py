@@ -646,6 +646,46 @@ def ingest_mappings_cmd() -> None:
     console.print(msg)
 
 
+@ingest_app.command("chains")
+def ingest_chains_cmd(
+    min_shared: int | None = typer.Option(
+        None, "--min-shared", help="Distinct actors that must use both techniques"
+    ),
+) -> None:
+    """Derive CHAINS_TO edges from actor co-occurrence.
+
+    Reads the USES and BELONGS_TO edges already in the graph, so it must run after
+    `ingest attack`. Needs no snapshot on disk. Re-running replaces the derived edges, so
+    a chain whose evidence has weakened disappears rather than lingering.
+
+    These edges are inferred, not published by MITRE: two techniques used by the same
+    groups, in kill-chain order. That is weaker than observed sequence data and should be
+    described that way wherever it is surfaced.
+
+    Raises typer.Exit(code=1) if the derivation fails.
+    """
+    from threatlens.graph.store import get_engine
+    from threatlens.ingest.chains import derive_chains
+
+    try:
+        with get_engine().begin() as conn:
+            n_edges = derive_chains(conn, min_shared_actors=min_shared)
+    except Exception as exc:
+        err_console.print(f"[red]✖ Derivation failed:[/red] {exc}")
+        err_console.print(
+            "[yellow]Suggestion:[/yellow] Load the graph first with: threatlens ingest attack"
+        )
+        raise typer.Exit(code=1) from exc
+
+    if n_edges == 0:
+        console.print(
+            "[yellow]No chains derived.[/yellow] Either the graph has no actor data yet, "
+            "or the threshold is above every observed pair."
+        )
+        return
+    console.print(f"[green]✔ Derived[/green] {n_edges} CHAINS_TO edges")
+
+
 @app.command("stats")
 def stats(
     json_output: bool = typer.Option(
