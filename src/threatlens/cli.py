@@ -869,6 +869,42 @@ def path_cmd(
         console.print(table)
 
 
+@app.command("embed")
+def embed_cmd(
+    batch_size: int = typer.Option(256, "--batch-size", help="Chunks per encode call"),
+) -> None:
+    """Chunk node descriptions, embed with bge-small-en-v1.5, write to node_chunks.
+
+    Reads every node with a description, splits into ~300-word chunks, encodes with
+    the sentence-transformer model, and writes the vectors into the node_chunks table.
+    Idempotent — re-running replaces existing chunks.
+    """
+    from threatlens.graph.store import count_node_chunks, get_engine
+    from threatlens.retrieval.embed import embed_nodes, load_encoder
+
+    console.print("[dim]Loading encoder model (first run downloads ~130 MB)...[/dim]")
+    try:
+        encoder = load_encoder()
+    except Exception as exc:
+        err_console.print(f"[red]✖ Failed to load encoder:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    try:
+        with get_engine().begin() as conn:
+            n_nodes, n_chunks = embed_nodes(conn, encoder, batch_size=batch_size)
+            total = count_node_chunks(conn)
+    except Exception as exc:
+        err_console.print(f"[red]✖ Embedding failed:[/red] {exc}")
+        err_console.print(
+            "[yellow]Suggestion:[/yellow] Verify database schema with: threatlens db init"
+        )
+        raise typer.Exit(code=1) from exc
+
+    console.print(
+        f"[green]✔ Embedded[/green] {n_nodes} nodes → {n_chunks} chunks  (total in table: {total})"
+    )
+
+
 def _guess_id(external_id: str) -> str:
     """Resolve a bare external identifier to a canonical prefixed node ID.
 
