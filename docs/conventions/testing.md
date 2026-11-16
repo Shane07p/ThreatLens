@@ -4,8 +4,8 @@ Test-first for ingestion parsers, traversal, and ranking. Those three are where 
 wrongness lives: a parser that drops 15% of edges and a reranker that inverts its sort both
 produce plausible output and a garbage ablation table.
 
-Code and comment rules are in [coderule.md](coderule.md); git, CI, and data rules are in
-[otherrule.md](otherrule.md).
+Code and comment rules are in [code.md](code.md); git, CI, and data rules are in
+[workflow.md](workflow.md).
 
 ## Rules
 
@@ -232,25 +232,10 @@ red build caused by model drift teaches everyone to ignore the build.
 
 ## CI
 
-`.github/workflows/ci.yml`, on every push to `main`, every PR, and manual dispatch:
-
-| Job | Steps |
-|---|---|
-| `lint` | `uv sync --all-groups` → `ruff check .` → `ruff format --check .` |
-| `test` | same sync → `pytest -m "not eval" --timeout=120` against a `pgvector/pgvector:pg16` service container |
-
-The test job sets `THREATLENS_TEST_DSN` to the service container and enables the `vector`
-extension before running. Concurrency is capped per ref so a rapid second push cancels the
-first run.
-
-`uv.lock` is committed — CI installs from it, so a transitive dependency releasing a broken
-version cannot turn the build red on its own.
-
-Run the same thing locally before pushing:
-
-```bash
-uv run ruff check . && uv run ruff format --check . && uv run pytest -m "not eval"
-```
+CI gates on `pytest -m "not eval"` only — unit tests on the newest supported Python, the
+full suite against a real pgvector service container on the pinned one. The complete job
+list lives in [workflow.md](workflow.md#ci) so there is one description of the pipeline,
+not two that drift apart.
 
 ## Provider conformance
 

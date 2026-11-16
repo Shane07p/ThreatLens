@@ -58,6 +58,11 @@ every row differs by exactly one component:
 
 Fill with real measured numbers. An empty cell is honest; a guessed cell is fraud.
 
+**One LLM provider per table.** Configs A–D are LLM-free; any row that uses a model uses the
+same provider and model as every other row in that table. Mixing providers across rows
+confounds the comparison. Provider is a separate axis — compare providers by running the
+whole table again.
+
 **Row A must be measured in Phase 3, not Phase 5.** It is the number everything else is
 compared against, and it must be produced by the same harness that produces C, D, E or the
 comparison is meaningless. This is why the metric definitions and holdout format land in

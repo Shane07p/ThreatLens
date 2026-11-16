@@ -8,7 +8,7 @@
 #   Fallback:   pip install -r requirements.txt
 #
 # Dependencies are grouped by the phase that introduces them, so you can install
-# only what the phase you are working on needs. See .claude/phases.md.
+# only what the phase you are working on needs. See docs/phases/phases.md.
 # Full setup instructions (database, API keys, snapshots): .claude/setup.md
 
 # ── Phase 1 — ATT&CK ingestion ────────────────────────────────────────────────
