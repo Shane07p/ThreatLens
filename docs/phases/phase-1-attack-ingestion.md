@@ -82,7 +82,7 @@ the tactic parse worked.
 
 `tests/unit/test_stix_parse.py`, `tests/integration/test_schema.py`,
 `tests/integration/test_upsert_idempotent.py`. Full list in
-[testing.md](../rules/testing.md).
+[testing.md](../conventions/testing.md).
 
 Build `tests/fixtures/mini-attack-bundle.json` here — ~20 hand-checked objects including
 one revoked, one deprecated, one sub-technique, one technique in two tactics. Every later

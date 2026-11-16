@@ -1,6 +1,6 @@
 # Decisions
 
-Deviations from [threat_intel_graphrag_spec (1).md](../../threat_intel_graphrag_spec%20(1).md),
+Deviations from [spec.md](../spec.md),
 with reasons. Append, don't rewrite.
 
 Several entries below also correct the original phase 1-3 data sources guide. That guide has

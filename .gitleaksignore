@@ -1,0 +1,17 @@
+# Findings reviewed and confirmed not to be secrets. Each entry is a gitleaks fingerprint —
+# commit:file:rule:line — so it ignores that one occurrence and nothing else. A new match
+# anywhere, even of the same rule, still fails the scan.
+#
+# Add an entry only after reading the flagged line, and describe it here without quoting it —
+# a quoted match in this file is itself a new match. A real secret is never allowlisted: it is
+# rotated, then removed.
+
+# A curl example in the original data-sources guide whose API-key header holds a
+# YOUR_KEY_HERE placeholder. The file was deleted from the tree but remains in history.
+# Reviewed 2026-11-17.
+a8da8f11e40b1d3fa0de9e523b6021d5ea02b2c4:threatlens_phase1-3_data_sources_guide.md:curl-auth-header:123
+
+# An earlier version of this file described the entry above by quoting the placeholder line,
+# which matched the same rule. The quote is gone from the current file; this pins the one
+# historical occurrence. Reviewed 2026-11-17.
+4ac713c210bd7cb380ed2be8ec0103a312b18a93:.gitleaksignore:curl-auth-header:8

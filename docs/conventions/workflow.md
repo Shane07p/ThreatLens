@@ -1,7 +1,7 @@
 # Other rules
 
 Git, repository visibility, CI, data handling, secrets, and working style.
-Code and comment rules are in [coderule.md](coderule.md); testing is in
+Code and comment rules are in [code.md](code.md); testing is in
 [testing.md](testing.md).
 
 ---
@@ -64,39 +64,37 @@ git checkout main && git pull
 git checkout track-b-stix-parser && git rebase main
 ```
 
-GitHub settings that matter: collaborators added, `main` protected, required status checks
-set to `lint` and `test`. Status check names only appear in that dropdown after they have
-run once, so open one pull request first.
+GitHub settings that matter: `main` protected by a ruleset requiring one approving review
+and the single **CI Gate** status check. The gate aggregates every other job, so adding a
+job never means touching repository settings. Merge methods are merge commit and rebase;
+squash is disabled because it erases contributor credit.
 
 ---
 
 ## Repository visibility
 
-Private during development, public at the end.
-
-The plan is to push the **real history** to the public repository. Squashing costs every
+**Public since 2026-11-17**, with its real history. Squashing would have cost every
 contributor their commit history and their contribution graph, and the development history
 is evidence the work was understood rather than generated.
 
-**Before anything goes public, scan the whole history for secrets:**
+Everything pushed is published immediately — every branch, every commit, every file that was
+ever added and later deleted. Three things guard that:
 
-```bash
-docker run --rm -v "$(pwd):/repo" zricethezav/gitleaks:latest detect --source=/repo -v
-```
+- **Push protection** (GitHub secret scanning) rejects a push containing a recognised token.
+- **gitleaks** runs in pre-commit and over the full history in CI, which also catches
+  generic secrets such as passwords in connection strings.
+- **GitHub secret scanning** raises an alert for anything that gets through.
 
-A key in a public commit is compromised the moment it lands. Rotate it — deleting the commit
-is not enough, because it can be served by SHA until garbage collection.
+**If a secret is pushed, rotate it first.** Deleting the commit is not enough: it stays
+reachable by SHA, it may already be in someone's clone or a mirror, and automated scrapers
+read public pushes within minutes. Rewriting history afterwards is clean-up, not
+containment — and on a public repository it breaks every existing clone, so it needs both
+maintainers to agree.
 
-If one specific file must not be public, filter it out of a **mirror clone** rather than the
-working repository, so nobody's clone breaks:
-
-```bash
-git clone --mirror <url> tmp-publish && cd tmp-publish
-git filter-repo --path <file> --invert-paths
-git push <public-remote> --all
-```
-
-**Local-only, never committed:** `.env`, `CLAUDE.md`, `task-division.md`, `data/raw/`.
+**Local-only, never committed:** `.env`, `CLAUDE.md`, `CLAUDE.local.md`,
+`task-division.md`, `data/raw/`. The two `CLAUDE` files are excluded for a functional reason,
+not a cosmetic one: if either exists, Claude Code reads it *instead of* `AGENTS.md`, so
+committing one would silently switch off the shared agent instructions for everyone.
 **Committed deliberately:** `data/eval/holdout.jsonl` and `data/manifest.json` — without
 them nobody can check a published number.
 
@@ -104,26 +102,59 @@ them nobody can check a published number.
 
 ## CI
 
-`.github/workflows/ci.yml` runs on every push and pull request:
+`.github/workflows/ci.yml` runs on every pull request, every push to `main`, and manual
+dispatch. Branch protection points at one job, **CI Gate**, which passes only when every
+other job did.
 
-| Job | Does |
-|---|---|
-| `lint` | `ruff check` + `ruff format --check` |
-| `test` | `pytest -m "not eval"` against a `pgvector/pgvector:pg16` service container |
+| Job | Does | Why |
+|---|---|---|
+| Lint and type check | `ruff check`, `ruff format --check`, `mypy` | Type hints on every function are a rule; mypy makes it a mechanical one |
+| Unit tests (Python 3.13) | `pytest -m "not db and not eval"` on the newest supported Python | Catches version-specific breakage without running everything twice |
+| Full suite (Python 3.12) | `pytest -m "not eval"` against a `pgvector/pgvector:pg16` service, with coverage | The real database, and a coverage floor so untested modules cannot slip in |
+| Secret scan | gitleaks over the **entire** history | A key committed and later deleted is still in the history |
+| Workflow audit | zizmor over `.github/workflows/` | Workflows run with repository credentials; a bad one is a supply-chain hole |
+
+Every action is pinned to a full commit SHA, with the version in a trailing comment so
+Dependabot can bump both. Jobs run with read-only `contents` permission, and checkouts do
+not persist credentials.
 
 **CI never runs the eval suite.** Those tests call a paid API and are non-deterministic. A
 build that goes red for reasons outside the diff is a build people learn to ignore.
 
-**Run the same commands locally before pushing:**
+**Run the same commands locally before pushing** — `uv run pre-commit install` once makes
+most of this automatic:
 
 ```bash
-uv run ruff check . && uv run ruff format . && uv run pytest -m "not eval"
+uv run ruff check . && uv run ruff format . && uv run mypy && uv run pytest -m "not eval"
 ```
 
 `uv.lock` is committed so CI installs exactly what you ran, and a transitive dependency
 releasing a broken version cannot turn the build red on its own.
 
 **A red build is stopped work.** Fix it or revert it; do not stack commits on top.
+
+## Automated maintenance
+
+**Dependabot** ([.github/dependabot.yml](../../.github/dependabot.yml)) checks monthly for
+Python dependencies, GitHub Actions, the pre-commit hooks, and the Postgres image. Minor and
+patch updates arrive as one grouped pull request per ecosystem; a major version arrives on
+its own so it can be read properly. A new release must be at least a week old before
+Dependabot proposes it, which keeps a compromised or yanked release from landing the day it
+ships. **Security updates ignore the schedule** and open as soon as an advisory is published.
+
+Treat a Dependabot pull request like any other: CI green, read the changelog for anything
+major, then merge.
+
+**AI review.** [.coderabbit.yaml](../../.coderabbit.yaml) configures CodeRabbit with this
+project's rules per directory. It is free because the repository is public, and takes
+effect once the GitHub app is installed. With two maintainers, an automated first pass is
+worth having — but it supplements the human review, it never replaces the approval. Do not
+enable its Autofix: it would commit to pull request branches.
+
+**CodeQL** runs as GitHub's default setup — no workflow file to maintain — with the
+`security-extended` query suite over the Python and the workflows, on every pull request, on
+pushes to `main`, and weekly. Findings appear under the Security tab. A finding is treated
+like a failing test: fix it, or dismiss it with a written reason.
 
 ---
 

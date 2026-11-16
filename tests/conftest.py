@@ -14,6 +14,7 @@ from __future__ import annotations
 import os
 import socket
 
+import psycopg
 import pytest
 
 FIXTURES = os.path.join(os.path.dirname(__file__), "fixtures")
@@ -54,6 +55,13 @@ def _no_network(monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest)
         )
 
     monkeypatch.setattr(socket.socket, "connect", _blocked)
+
+    # psycopg reaches Postgres through libpq, which opens its sockets in C and never calls
+    # Python's socket module, so the patch above cannot see it. SQLAlchemy looks the
+    # function up on the module at connect time, which is why the module attribute is
+    # patched and not only the class method it aliases.
+    monkeypatch.setattr(psycopg, "connect", _blocked)
+    monkeypatch.setattr(psycopg.Connection, "connect", classmethod(_blocked))
 
 
 @pytest.fixture(scope="session")

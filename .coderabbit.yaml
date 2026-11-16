@@ -1,0 +1,80 @@
+# CodeRabbit configuration. Takes effect once the CodeRabbit GitHub app is installed on this
+# repository; free, because the repository is public.
+#
+# The per-path instructions restate the project's hard rules where they apply. Generic style
+# is already enforced by ruff and mypy in CI; the review is most useful on the things a
+# linter cannot see.
+
+language: en-US
+tone_instructions: >-
+  Be direct and specific. Prove a problem with a concrete input or a failing case rather
+  than "this might". Skip praise and style nits that ruff would catch.
+
+reviews:
+  profile: assertive
+  high_level_summary: true
+  poem: false
+  review_status: true
+  collapse_walkthrough: true
+  auto_review:
+    enabled: true
+    drafts: false
+  path_filters:
+    - "!uv.lock"
+    - "!data/**"
+    - "!docs/superpowers/**"
+    - "!tests/fixtures/**"
+  path_instructions:
+    - path: "**/*.py"
+      instructions: >-
+        Flag: comments that reference phase numbers, task ids, or decision ids (D1, "Phase
+        3", "Track B"); defensive code for cases that cannot happen; a missing value
+        defaulted to a plausible value instead of None; os.environ read outside config.py;
+        print() outside cli.py.
+    - path: "src/threatlens/graph/**"
+      instructions: >-
+        The only directory allowed to contain SQL. Every query must use sqlalchemy text()
+        with bound parameters — flag any f-string, %-formatting, or concatenation in SQL.
+        Writes must be upserts on the primary key. schema.sql statements must be
+        idempotent (IF NOT EXISTS). In traversal SQL, DISTINCT ON must stay in a subquery
+        with ORDER BY cost and LIMIT applied outside it.
+    - path: "src/threatlens/ingest/**"
+      instructions: >-
+        Parsers (parse_*) must be pure: no database, no network. Writes go through
+        graph/store.py. Every skipped record must be counted, and out-of-scope objects must
+        not be counted as skipped. Fetches must pin url and sha256 in data/manifest.json
+        and refuse to overwrite without force. Flag any comparison of Content-Length
+        against decoded bytes.
+    - path: "src/threatlens/retrieval/**"
+      instructions: >-
+        Must not import langchain or langgraph. Ranking is hand-written because it is what
+        the ablation table measures. Reciprocal rank fusion must use ranks, never raw or
+        normalised scores. Indexes and model weights load once, not per query. Retrieval
+        must not write to the database.
+    - path: "src/threatlens/{eval,report}/**"
+      instructions: >-
+        Must not import langchain or langgraph. Only eval/ may read
+        data/eval/holdout.jsonl, and nothing may regenerate it.
+    - path: "tests/**"
+      instructions: >-
+        Tests must be named after the behaviour they assert. Unit tests must not touch the
+        network, a database, or model weights. Flag assertions on exact float scores or on
+        counts that will drift with upstream data instead of on properties. Flag tests that
+        would still pass if the code under test were deleted or inverted. Integration tests
+        must carry the db marker.
+    - path: ".github/workflows/**"
+      instructions: >-
+        Actions must be pinned to a full commit SHA. Jobs need least-privilege permissions.
+        Untrusted input (PR titles, branch names) must never be interpolated directly into
+        run: scripts. The eval suite must never run in CI.
+
+chat:
+  auto_reply: true
+
+knowledge_base:
+  code_guidelines:
+    enabled: true
+    filePatterns:
+      - "AGENTS.md"
+      - "**/AGENTS.md"
+      - "docs/conventions/*.md"
