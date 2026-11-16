@@ -18,8 +18,12 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from threatlens.models import Edge, Graph, Node
+
+if TYPE_CHECKING:
+    from sqlalchemy.engine import Connection
 
 log = logging.getLogger(__name__)
 
@@ -275,7 +279,7 @@ def parse_bundle(path: Path) -> Graph:
     )
 
 
-def ingest_attack(path: Path, sha256: str, conn) -> tuple[int, int]:
+def ingest_attack(path: Path, sha256: str, conn: Connection) -> tuple[int, int]:
     """Parse the bundle and write it. Returns (node_count, edge_count).
 
     Nodes go first — edges carry foreign keys pointing at them.

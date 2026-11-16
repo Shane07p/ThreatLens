@@ -13,9 +13,13 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from threatlens.ingest.fetch import TokenBucket as TokenBucket
 from threatlens.models import Node
+
+if TYPE_CHECKING:
+    from sqlalchemy.engine import Connection
 
 log = logging.getLogger(__name__)
 
@@ -120,7 +124,7 @@ def load_kev_ids(kev_path: Path) -> set[str]:
 def ingest_cves(
     nvd_path: Path,
     sha256: str,
-    conn,
+    conn: Connection,
     kev_ids: set[str] | None = None,
 ) -> tuple[int, int]:
     """Parse the NVD snapshot and upsert CVE nodes into the graph.
