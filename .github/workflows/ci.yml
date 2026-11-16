@@ -6,28 +6,38 @@ on:
   pull_request:
   workflow_dispatch:
 
+# Every job can read the repository and nothing more. Workflows run with repository
+# credentials, so a job that needs extra permissions should ask for them explicitly.
+permissions:
+  contents: read
+
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
 env:
-  # Never let a stray API key reach CI — the eval suite must stay excluded.
   PYTHONDONTWRITEBYTECODE: "1"
+
+# Actions are pinned to full commit SHAs, with the version in a trailing comment. A tag can
+# be moved to point at different code; a SHA cannot. Dependabot bumps both together.
 
 jobs:
   lint:
-    name: Lint
+    name: Lint and type check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           enable-cache: true
 
+      # --locked fails if pyproject.toml changed without `uv lock` being re-run, so the lock
+      # file can never quietly fall out of step with what the project declares.
       - name: Sync dependencies
-        run: uv sync --all-groups
+        run: uv sync --locked --all-groups
 
       - name: ruff check
         run: uv run ruff check .
@@ -35,33 +45,32 @@ jobs:
       - name: ruff format --check
         run: uv run ruff format --check .
 
+      - name: mypy
+        run: uv run mypy
+
   unit-tests:
-    name: Unit tests (Python ${{ matrix.python-version }})
+    name: Unit tests (Python 3.13)
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        python-version: ["3.12", "3.13"]
-
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           enable-cache: true
-
-      - name: Install Python ${{ matrix.python-version }}
-        run: uv python install ${{ matrix.python-version }}
+          python-version: "3.13"
 
       - name: Sync dependencies
-        run: uv sync --all-groups -p ${{ matrix.python-version }}
+        run: uv sync --locked --all-groups
 
+      # The newest supported Python, without the database. The pinned version (3.12) runs
+      # the whole suite in the next job, so nothing here runs twice on the same interpreter.
       - name: Run unit tests
-        run: uv run pytest tests/unit/ -v --timeout=60 --tb=short
+        run: uv run pytest -m "not db and not eval" --timeout=60 --tb=short
 
-  integration-tests:
-    name: Integration tests
+  full-suite:
+    name: Full suite (Python 3.12)
     runs-on: ubuntu-latest
     needs: [unit-tests]
 
@@ -84,43 +93,103 @@ jobs:
       THREATLENS_TEST_DSN: postgresql://threatlens:threatlens@localhost:5432/threatlens_test
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           enable-cache: true
 
       - name: Sync dependencies
-        run: uv sync --all-groups
+        run: uv sync --locked --all-groups
 
       - name: Enable pgvector
         run: |
           PGPASSWORD=threatlens psql -h localhost -U threatlens -d threatlens_test \
             -c "CREATE EXTENSION IF NOT EXISTS vector;"
 
-      # `eval` tests call the Anthropic API. They are non-deterministic and they
-      # cost money, so CI never gates on them — see .claude/testing.md.
+      # `eval` tests call a paid LLM API and are non-deterministic, so CI never gates on
+      # them — see docs/conventions/testing.md.
+      #
+      # The coverage floor sits a few points under the measured level (85% with the real
+      # ATT&CK bundle present, slightly lower here where those tests skip). It exists to
+      # catch an untested module landing, not to reward chasing a percentage.
       - name: Run tests (unit + integration, excluding eval)
-        run: uv run pytest -m "not eval" --timeout=120 -v --tb=short
+        run: >-
+          uv run pytest -m "not eval" --timeout=120 --tb=short
+          --cov --cov-report=term --cov-fail-under=80
 
-  # ── Gate ──────────────────────────────────────────────────────────────────
-  # A single check for branch-protection rules to point at, so adding a new
-  # matrix axis or job doesn't require updating repo settings.
+      - name: Coverage summary
+        if: always()
+        run: uv run coverage report --format=markdown >> "$GITHUB_STEP_SUMMARY" || true
+
+  secrets:
+    name: Secret scan
+    runs-on: ubuntu-latest
+    steps:
+      # Full history: a key that was committed and later deleted is still served by SHA,
+      # so scanning only the latest tree would miss exactly the leaks that matter.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      # The binary is verified against its published checksum rather than trusted on
+      # download. Dependabot does not update this version — bump it by hand, with the new
+      # checksum from the release's gitleaks_<version>_checksums.txt.
+      - name: Install gitleaks
+        env:
+          GITLEAKS_VERSION: 8.30.1
+          GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+        run: |
+          curl -sSfL -o gitleaks.tar.gz \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "${GITLEAKS_SHA256}  gitleaks.tar.gz" | sha256sum --check --strict
+          tar -xzf gitleaks.tar.gz gitleaks
+
+      - name: Scan the full history
+        run: ./gitleaks git --redact --verbose .
+
+  workflow-audit:
+    name: Workflow audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          enable-cache: true
+
+      # zizmor finds template injection, over-broad permissions, unpinned actions, and
+      # credential persistence in workflows. The token lets it check for known-vulnerable
+      # and impostor action commits; it is read-only like everything else here.
+      - name: zizmor
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: uvx zizmor==1.32.0 --format=github .github/workflows
+
+  # ── Gate ──────────────────────────────────────────────────────────────────────
+  # The single check branch protection requires. It passes only when every job above
+  # succeeded, so adding a job means adding it to `needs` — never touching repo settings.
+  # Results come in through an environment variable rather than `${{ }}` inside the script,
+  # which keeps the step safe from template injection.
   ci-gate:
     name: CI Gate
     if: always()
-    needs: [lint, unit-tests, integration-tests]
+    needs: [lint, unit-tests, full-suite, secrets, workflow-audit]
     runs-on: ubuntu-latest
     steps:
-      - name: Decide pass/fail
+      - name: Require every job to have succeeded
+        env:
+          RESULTS: ${{ toJSON(needs) }}
         run: |
-          echo "lint:         ${{ needs.lint.result }}"
-          echo "unit-tests:   ${{ needs.unit-tests.result }}"
-          echo "integration:  ${{ needs.integration-tests.result }}"
-          if [[ "${{ needs.lint.result }}" != "success" ]] || \
-             [[ "${{ needs.unit-tests.result }}" != "success" ]] || \
-             [[ "${{ needs.integration-tests.result }}" != "success" ]]; then
-            echo "::error::One or more required jobs failed."
+          echo "$RESULTS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
+          if echo "$RESULTS" | jq -e 'to_entries | map(.value.result) | all(. == "success")' > /dev/null; then
+            echo "Every required job succeeded."
+          else
+            echo "::error::One or more required jobs did not succeed."
             exit 1
           fi
