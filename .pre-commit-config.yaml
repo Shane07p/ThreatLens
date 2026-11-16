@@ -1,0 +1,45 @@
+# Install once:  uv run pre-commit install
+# Run on demand: uv run pre-commit run --all-files
+#
+# ruff and mypy run as local hooks through `uv run`, so their versions come from uv.lock —
+# the same versions CI uses. A separately pinned remote ruff hook drifts from the locked one,
+# and then the hook and CI disagree about formatting.
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      # The ATT&CK bundle in data/raw/ is 54 MB. It is gitignored; this catches the day
+      # someone force-adds it or copies a snapshot somewhere that is not.
+      - id: check-added-large-files
+        args: ["--maxkb=1024"]
+      - id: check-merge-conflict
+      - id: check-yaml
+      - id: check-toml
+      - id: detect-private-key
+
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.30.1
+    hooks:
+      - id: gitleaks
+
+  - repo: local
+    hooks:
+      - id: ruff-check
+        name: ruff check
+        entry: uv run ruff check --fix
+        language: system
+        types_or: [python, pyi]
+      - id: ruff-format
+        name: ruff format
+        entry: uv run ruff format
+        language: system
+        types_or: [python, pyi]
+      - id: mypy
+        name: mypy
+        entry: uv run mypy
+        language: system
+        # mypy reads its file list from pyproject.toml; passing staged files would check
+        # them out of context and miss errors their callers cause.
+        pass_filenames: false
+        files: ^src/.*\.py$
