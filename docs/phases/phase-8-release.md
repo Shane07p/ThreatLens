@@ -63,7 +63,7 @@ Order matters — the ablation table goes near the top, not buried at the bottom
 - [ ] `eval_results/` committed — the numbers are checkable
 - [ ] `uv run pytest -m "not eval"` green from a clean clone
 - [ ] `ruff check` clean
-- [ ] Every phase doc in `.claude/` has its status updated
+- [ ] Every phase doc in `docs/phases/` has its status updated
 - [ ] [phases.md](phases.md) status table reflects reality, including anything cut
 
 ## Recording what was cut
@@ -80,4 +80,4 @@ judgment. A vague implication that it exists reads as a lie once someone runs it
 - [ ] Related work cited by name; no novelty claimed
 - [ ] Limitations section complete and specific
 - [ ] Attribution and licensing correct
-- [ ] `.claude/` statuses accurate, cuts recorded
+- [ ] `docs/phases/` statuses accurate, cuts recorded

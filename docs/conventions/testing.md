@@ -367,7 +367,7 @@ One test guards the eval set:
 
 ```python
 def test_holdout_only_read_by_eval_module():
-    hits = grep_repo("holdout.jsonl", exclude=["src/threatlens/eval/", "tests/", ".claude/"])
+    hits = grep_repo("holdout.jsonl", exclude=["src/threatlens/eval/", "tests/", "docs/"])
     assert not hits, f"holdout referenced outside eval/: {hits}"
 
 def test_holdout_checksum_unchanged():
