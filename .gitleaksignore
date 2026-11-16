@@ -1,0 +1,10 @@
+# Findings reviewed and confirmed not to be secrets. Each entry is a gitleaks fingerprint —
+# commit:file:rule:line — so it ignores that one occurrence and nothing else. A new match
+# anywhere, even of the same rule, still fails the scan.
+#
+# Add an entry only after reading the flagged line. A real secret is never allowlisted: it is
+# rotated, then removed.
+
+# `curl -H "apiKey: YOUR_KEY_HERE"` — a placeholder in the original data-sources guide,
+# deleted from the tree since but still in history. Reviewed 2026-11-17.
+a8da8f11e40b1d3fa0de9e523b6021d5ea02b2c4:threatlens_phase1-3_data_sources_guide.md:curl-auth-header:123
