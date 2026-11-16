@@ -32,7 +32,7 @@ rank-bm25>=0.2.2              # lexical half of hybrid retrieval
 # reranker (BAAI/bge-reranker-base) also runs through sentence-transformers
 
 # ── Phase 6 — agent loop + LLM providers ─────────────────────────────────────
-langchain>=0.3                # init_chat_model: one interface across providers
+langchain>=1.4.9                # init_chat_model: one interface across providers
 langgraph>=0.2                # the agent loop, with checkpointing
 langchain-anthropic>=0.3      # Claude (default provider)
 
