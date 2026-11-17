@@ -49,24 +49,31 @@ jobs:
       - name: Run mutmut
         run: uv run mutmut run --max-children 4
 
+      # `mutmut results` lists every mutant no test killed, as `module.x_function__mutmut_N: status`.
+      # The summary groups them by function, so the weakest spots are visible without
+      # downloading anything. "no tests" means no unit test reaches that function at all —
+      # expected for the ingest_* functions, whose tests need Postgres.
       - name: Summarise
         if: always()
         run: |
           mkdir -p test-results
           uv run mutmut results > test-results/mutmut-results.txt 2>&1 || true
-          uv run mutmut export-cicd-stats > /dev/null 2>&1 || true
+          results=test-results/mutmut-results.txt
           {
             echo "## Mutation testing"
             echo
-            echo '```'
-            find mutants -maxdepth 1 -name '*.json' -exec cat {} \; 2>/dev/null || echo "no stats file"
-            echo '```'
+            echo "| Status | Mutants |"
+            echo "|---|---|"
+            sed -E 's/.*: //' "$results" | sort | uniq -c | awk '{n=$1; $1=""; print "| " substr($0,2) " | " n " |"}'
             echo
-            echo "Surviving mutants (first 50):"
+            echo "### Where mutants survive or go untested"
             echo
-            echo '```'
-            head -n 50 test-results/mutmut-results.txt
-            echo '```'
+            echo "| Mutants | Function | Status |"
+            echo "|---|---|---|"
+            sed -E 's/^ +//; s/__mutmut_[0-9]+:/:/; s/\.x_/ /' "$results" \
+              | awk -F': ' '{c[$1 "|" $2]++} END {for (k in c) {split(k, a, "|"); print c[k] "|" a[1] "|" a[2]}}' \
+              | sort -t'|' -k1,1nr | head -n 25 \
+              | awk -F'|' '{print "| " $1 " | `" $2 "` | " $3 " |"}'
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload the mutation report
