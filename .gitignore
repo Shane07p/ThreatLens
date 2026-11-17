@@ -41,3 +41,6 @@ docker-compose.override.yml
 .coverage
 .coverage.*
 htmlcov/
+
+# Test-case report from `pytest --case-report` (CI uploads it as a build artifact)
+test-results/

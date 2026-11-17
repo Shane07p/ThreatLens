@@ -49,6 +49,10 @@ markers = [
     "slow: needs model weights or a large corpus",
     "db: needs a live Postgres with pgvector",
     "eval: calls the Anthropic API, costs tokens",
+    "security: asserts a security property; reported in the test-case CSV",
+    "negative: asserts a rejection, refusal, or absence; overrides the inferred type",
+    "positive: overrides an inferred negative type in the test-case CSV",
+    "case(input, expected): states a test's input and expected result for the CSV",
 ]
 
 [tool.ruff]

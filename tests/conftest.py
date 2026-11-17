@@ -17,6 +17,10 @@ import socket
 import psycopg
 import pytest
 
+# The test-case report (`--case-report=PATH`). Importing its hooks into this namespace is
+# what registers them with pytest; see tests/case_report.py.
+from case_report import pytest_addoption, pytest_configure  # noqa: F401
+
 FIXTURES = os.path.join(os.path.dirname(__file__), "fixtures")
 
 
