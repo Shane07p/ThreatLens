@@ -1,0 +1,3 @@
+# Byte-exact copy of upstream data, BOM included. Line-ending conversion would change the
+# exact bytes the parser is tested against.
+tests/fixtures/mappings-upstream-sample.csv -text
