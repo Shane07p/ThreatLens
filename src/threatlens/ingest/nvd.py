@@ -32,31 +32,68 @@ NVD_DETAIL = "https://nvd.nist.gov/vuln/detail/"
 # ---------------------------------------------------------------------------
 
 
-def _as_dict(value: object) -> dict:
-    """`value` if it is a dict, else an empty one.
+# Names used in a node's `malformed_fields`. Fixed, so a reader can tell exactly which
+# upstream field arrived corrupt.
+MALFORMED_FIELD_NAMES = frozenset(
+    {
+        "descriptions",
+        "metrics",
+        "cvss_score",
+        "cvss_vector",
+        "references",
+        "published",
+        "last_modified",
+    }
+)
 
-    NVD records are large, nested, and have changed shape before. A field holding null, a
-    string, or a list where a dict belongs must cost that field, not the whole ingest run.
+
+def _dict_field(raw: dict, key: str, malformed: list[str], name: str = "") -> dict:
+    """`raw[key]` if it is a dict, else an empty dict.
+
+    Absent and null are honest missing data and pass silently. A value that is present but
+    the wrong type is corruption: it is dropped — a bad field must never end an ingest run —
+    and its name is recorded in `malformed`, so the loss stays visible and countable rather
+    than looking exactly like absence. The list and string readers below follow the same rule.
     """
-    return value if isinstance(value, dict) else {}
+    value = raw.get(key)
+    if isinstance(value, dict):
+        return value
+    if value is not None:
+        malformed.append(name or key)
+    return {}
 
 
-def _as_list(value: object) -> list:
-    """`value` if it is a list, else an empty one. See `_as_dict`."""
-    return value if isinstance(value, list) else []
+def _list_field(raw: dict, key: str, malformed: list[str], name: str = "") -> list:
+    """`raw[key]` if it is a list, else an empty list. See `_dict_field`."""
+    value = raw.get(key)
+    if isinstance(value, list):
+        return value
+    if value is not None:
+        malformed.append(name or key)
+    return []
 
 
-def _as_str(value: object) -> str | None:
-    """`value` if it is a non-empty string, else None."""
-    return value if isinstance(value, str) and value else None
+def _str_field(raw: dict, key: str, malformed: list[str], name: str = "") -> str | None:
+    """`raw[key]` if it is a non-empty string, else None. See `_dict_field`.
+
+    An empty string is treated as absent, not malformed: it carries no value either way.
+    """
+    value = raw.get(key)
+    if isinstance(value, str):
+        return value or None
+    if value is not None:
+        malformed.append(name or key)
+    return None
 
 
-def _english_description(raw: dict) -> str | None:
+def _english_description(raw: dict, malformed: list[str]) -> str | None:
     """Extract the English-language description, ignoring translations."""
-    for d in _as_list(raw.get("descriptions")):
-        d = _as_dict(d)
+    for d in _list_field(raw, "descriptions", malformed):
+        if not isinstance(d, dict):
+            malformed.append("descriptions")
+            continue
         if d.get("lang") == "en":
-            return _as_str(d.get("value"))
+            return _str_field(d, "value", malformed, name="descriptions")
     return None
 
 
@@ -66,29 +103,48 @@ def _score(value: object) -> float | None:
     Anything else — a bool, an unparseable string, a number outside the scale — is not a
     score, and inventing one would be worse than having none.
     """
-    if isinstance(value, bool):
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
         return None
     try:
-        score = float(value)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
+        score = float(value)
+    except ValueError:
         return None
     return score if 0.0 <= score <= 10.0 else None
 
 
-def _cvss(raw: dict) -> tuple[float | None, str | None, str | None]:
+def _cvss(raw: dict, malformed: list[str]) -> tuple[float | None, str | None, str | None]:
     """Extract CVSS score with a strict fallback chain: v3.1 → v4.0 → None.
 
     Returns (score, version, vector_string). A missing score is None —
     never 0.0. A fabricated 0.0 reads as "no risk" in an answer someone
     may act on.
     """
-    metrics = _as_dict(raw.get("metrics"))
+    metrics = _dict_field(raw, "metrics", malformed)
     for key, version in (("cvssMetricV31", "3.1"), ("cvssMetricV40", "4.0")):
-        entries = _as_list(metrics.get(key))
-        if entries:
-            data = _as_dict(_as_dict(entries[0]).get("cvssData"))
-            return _score(data.get("baseScore")), version, _as_str(data.get("vectorString"))
+        entries = _list_field(metrics, key, malformed, name="metrics")
+        if not entries:
+            continue
+        if not isinstance(entries[0], dict):
+            malformed.append("metrics")
+            continue
+        data = _dict_field(entries[0], "cvssData", malformed, name="metrics")
+        base = data.get("baseScore")
+        score = _score(base)
+        if base is not None and score is None:
+            malformed.append("cvss_score")
+        return score, version, _str_field(data, "vectorString", malformed, name="cvss_vector")
     return None, None, None
+
+
+def _references(raw: dict, malformed: list[str]) -> list[str]:
+    urls: list[str] = []
+    for r in _list_field(raw, "references", malformed):
+        url = r.get("url") if isinstance(r, dict) else None
+        if isinstance(url, str) and url:
+            urls.append(url)
+        else:
+            malformed.append("references")
+    return urls
 
 
 def parse_cve_record(raw: dict) -> Node | None:
@@ -96,18 +152,36 @@ def parse_cve_record(raw: dict) -> Node | None:
 
     Expects the inner ``cve`` dict from the NVD 2.0 API response or top-level wrapper.
 
-    Tolerant of malformed fields: a wrong-typed field is dropped, never raised on, so one
-    bad record cannot end an ingest run. The id must be a non-empty string — a record whose
-    id is `true` or `1` returns None rather than becoming a node called `cve:True`.
+    Tolerant of malformed fields, but never silently: a field that is present with the wrong
+    type is dropped, named in the node's `malformed_fields`, and logged with the CVE id, so
+    corrupt upstream data stays distinguishable from data that is genuinely absent. The id
+    must be a non-empty string — a record whose id is `true` or `1` returns None rather than
+    becoming a node called `cve:True`.
     """
-    raw = _as_dict(raw)
+    raw = raw if isinstance(raw, dict) else {}
     if isinstance(raw.get("cve"), dict):
         raw = raw["cve"]
-    cve_id = _as_str(raw.get("id"))
-    if cve_id is None:
+    cve_id = raw.get("id")
+    if not isinstance(cve_id, str) or not cve_id:
         return None
 
-    score, version, vector = _cvss(raw)
+    malformed: list[str] = []
+    score, version, vector = _cvss(raw, malformed)
+    attrs: dict = {
+        "cvss_score": score,
+        "cvss_version": version,
+        "cvss_vector": vector,
+        "published": _str_field(raw, "published", malformed),
+        "last_modified": _str_field(raw, "lastModified", malformed, name="last_modified"),
+        "references": _references(raw, malformed),
+    }
+    description = _english_description(raw, malformed)
+
+    if malformed:
+        attrs["malformed_fields"] = sorted(set(malformed))
+        log.warning(
+            "%s: dropped malformed field(s): %s", cve_id, ", ".join(attrs["malformed_fields"])
+        )
 
     return Node(
         id=Node.make_id("cve", cve_id),
@@ -115,19 +189,8 @@ def parse_cve_record(raw: dict) -> Node | None:
         external_id=cve_id,
         name=cve_id,
         source_url=f"{NVD_DETAIL}{cve_id}",
-        description=_english_description(raw),
-        attrs={
-            "cvss_score": score,
-            "cvss_version": version,
-            "cvss_vector": vector,
-            "published": _as_str(raw.get("published")),
-            "last_modified": _as_str(raw.get("lastModified")),
-            "references": [
-                url
-                for r in _as_list(raw.get("references"))
-                if (url := _as_str(_as_dict(r).get("url")))
-            ],
-        },
+        description=description,
+        attrs=attrs,
     )
 
 
@@ -200,5 +263,12 @@ def ingest_cves(
 
     if skipped:
         log.info("skipped %d unusable CVE records", skipped)
+    damaged = sum(1 for n in nodes if n.attrs.get("malformed_fields"))
+    if damaged:
+        # The run-level number that makes upstream corruption visible at a glance. Each
+        # record's own warning, above, names the CVE and the fields it lost.
+        log.warning(
+            "%d of %d CVE records were ingested with malformed fields dropped", damaged, len(nodes)
+        )
 
     return n_nodes, kev_count
