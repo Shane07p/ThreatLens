@@ -21,6 +21,14 @@ rather than an accident.
 see them. Integration tests connect through `THREATLENS_TEST_DSN` and truncate their
 tables in a fixture.
 
+## Test-case report
+
+`uv run pytest -m "not eval" --case-report=test-results/test-cases.csv` (with `=`) lists every test
+with its level, white/black-box technique, positive/negative type, input, expected result,
+and actual outcome ([how it classifies](../docs/conventions/testing.md#test-case-report)).
+Mark security tests `@pytest.mark.security`; correct a wrong inference with
+`@pytest.mark.negative`, `@pytest.mark.positive`, or `@pytest.mark.case(...)`.
+
 ## Rules
 
 - **Write the test first** for parsers, traversal, and ranking. Watch it fail for the reason

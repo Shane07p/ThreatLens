@@ -115,6 +115,7 @@ class TestNoHardcodedSecretsInSource:
         _python_files(SRC_ROOT),
         ids=lambda p: str(p.relative_to(SRC_ROOT)),
     )
+    @pytest.mark.security
     def test_no_hardcoded_secrets(self, filepath: Path):
         content = filepath.read_text(encoding="utf-8")
         for pattern in self.SUSPECT_PATTERNS:

@@ -230,6 +230,42 @@ addopts = "-q --strict-markers"
 **CI gates on `-m "not eval"` only.** An LLM call is non-deterministic and costs money; a
 red build caused by model drift teaches everyone to ignore the build.
 
+## Test-case report
+
+Every test can be listed as a row of a CSV — what it checks, how, and what happened:
+
+```bash
+uv run pytest -m "not eval" --case-report=test-results/test-cases.csv
+```
+
+Use `=`, not a space: with a space, the second run fails with "unrecognized arguments" once
+the file exists, because pytest mistakes the path for a test path before it has loaded the
+option (explained in `tests/case_report.py`).
+
+CI writes the same file on every run and keeps it for 30 days as the `test-cases` artifact
+on the run's summary page. It is generated, never hand-edited: the `actual` and `status`
+columns come from the run itself, so the report cannot claim a result the suite did not
+produce.
+
+| Column | Meaning |
+|---|---|
+| `level` | `unit`, or `integration` for tests marked `db` |
+| `technique` | **black-box** when the test drives the CLI as a user would and checks only what comes out; **white-box** when it calls internal functions and knows how they work |
+| `type` | **negative** when the test asserts a rejection, refusal, or absence — malformed input refused, a secret not printed, an edge not created; **positive** when it asserts correct behaviour on valid input |
+| `security` | `yes` for tests marked `@pytest.mark.security` |
+| `input` | the parameters of a parametrized test |
+| `expected` | the test's name as a sentence — which is why tests are named after the behaviour they assert |
+| `actual` | `as expected`, the first line of the failure, or the skip reason |
+
+`technique` and `type` are inferred: black-box from a call to the CLI, negative from
+`pytest.raises` or a negative word in the name (`invalid`, `missing`, `never`, `rejects`, …).
+When the inference is wrong, state it: `@pytest.mark.negative`, `@pytest.mark.positive`, or
+`@pytest.mark.case(input=..., expected=...)`. Mark a test `@pytest.mark.security` when it
+guards a security property — injection, secrets in output, credentials, isolation.
+
+A healthy suite has both types for every module. A parser with only positive tests has
+never been shown to reject anything.
+
 ## CI
 
 CI gates on `pytest -m "not eval"` only — unit tests on the newest supported Python, the

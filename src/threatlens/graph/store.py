@@ -10,8 +10,9 @@ import json
 from collections.abc import Iterable
 from importlib import resources
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, make_url, text
 from sqlalchemy.engine import Connection, Engine, Row
+from sqlalchemy.exc import ArgumentError
 
 from threatlens.models import Edge, Node
 
@@ -50,6 +51,23 @@ def normalize_dsn(url: str) -> str:
     if url.startswith("postgres://"):  # the legacy Heroku-style prefix
         return url.replace("postgres://", "postgresql+psycopg://", 1)
     return url
+
+
+def redact_dsn(url: str) -> str:
+    """The DSN with its password hidden, for anything printed or logged.
+
+    What a command prints ends up in shell history, CI logs, and pasted bug reports.
+    Host, port, user, and database stay visible — they are what someone debugging a
+    connection needs. A DSN with no password is returned unchanged.
+
+    A URL that cannot be parsed is hidden entirely rather than printed as-is: if the
+    password cannot be located, no part of the string can be shown safely.
+    """
+    try:
+        parsed = make_url(url)
+    except ArgumentError:
+        return "****"
+    return parsed.render_as_string(hide_password=True) if parsed.password else url
 
 
 def ping(engine: Engine) -> bool:

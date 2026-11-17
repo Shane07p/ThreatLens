@@ -384,6 +384,7 @@ def test_very_long_description_is_not_truncated(tmp_path):
     assert len(g.nodes[0].description) == 200_000
 
 
+@pytest.mark.security
 def test_sql_injection_shaped_text_is_stored_verbatim(tmp_path):
     """Parameterized queries make this safe; the assertion documents that we rely on it."""
     obj = technique("T0001")
