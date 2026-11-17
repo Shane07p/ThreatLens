@@ -190,10 +190,18 @@ def test_header_only_file_yields_nothing(tmp_path):
 
 
 def test_whitespace_only_technique_is_not_an_edge(tmp_path):
+    """A blank cell contributes nothing. A second, usable row keeps the file valid — a file
+    whose rows all yield nothing is rejected outright (see the test below)."""
     edges, _ = parse_mappings_csv(
-        write_csv(tmp_path, [{"CVE ID": "CVE-2024-0001", "Primary Impact": "   "}])
+        write_csv(
+            tmp_path,
+            [
+                {"CVE ID": "CVE-2024-0001", "Primary Impact": "   "},
+                {"CVE ID": "CVE-2024-0002", "Primary Impact": "T1190"},
+            ],
+        )
     )
-    assert edges == []
+    assert [e.src for e in edges] == ["cve:CVE-2024-0002"]
 
 
 def test_surrounding_whitespace_is_stripped(tmp_path):
@@ -208,28 +216,38 @@ def test_whitespace_only_cve_id_counts_as_skipped(tmp_path):
     """Distinct from a genuinely absent id, but equally unusable — and must be counted,
     not silently dropped."""
     edges, skipped = parse_mappings_csv(
-        write_csv(tmp_path, [{"CVE ID": "   ", "Primary Impact": "T1190"}])
+        write_csv(
+            tmp_path,
+            [
+                {"CVE ID": "   ", "Primary Impact": "T1190"},
+                {"CVE ID": "CVE-2024-0002", "Primary Impact": "T1059"},
+            ],
+        )
     )
-    assert edges == []
+    assert [e.src for e in edges] == ["cve:CVE-2024-0002"]
     assert skipped == 1
 
 
-def test_missing_impact_columns_do_not_crash(tmp_path):
-    """An upstream header rename should degrade to zero edges, not an exception."""
+def test_missing_impact_columns_fail_loudly(tmp_path):
+    """Reversed deliberately. This test used to assert that a header rename should "degrade
+    to zero edges, not an exception" — and that silent degradation is exactly how a
+    byte-order mark on the real file hid the whole dataset while every test passed. An
+    empty bridge is not a result anyone should be allowed to trust without being told."""
     path = write_csv(
         tmp_path, [{"CVE ID": "CVE-2024-0001"}], fieldnames=["CVE ID", "Some Other Column"]
     )
-    edges, skipped = parse_mappings_csv(path)
-    assert edges == []
-    assert skipped == 0
+    with pytest.raises(ValueError, match="Primary Impact"):
+        parse_mappings_csv(path)
 
 
-def test_duplicate_rows_produce_duplicate_edges(tmp_path):
-    """Documented: the database upsert dedupes on (src, dst, kind), so the parser does
-    not. Asserted so a future change to dedupe here is deliberate."""
+def test_duplicate_rows_produce_one_edge(tmp_path):
+    """Changed deliberately — this test existed so that change would be. Leaving dedupe to
+    the database upsert meant the last write won, so a later secondary listing of the same
+    pair could quietly lower a primary edge to 0.5. The parser now keeps one edge per pair
+    at its strongest weight."""
     row = {"CVE ID": "CVE-2024-0001", "Primary Impact": "T1190"}
     edges, _ = parse_mappings_csv(write_csv(tmp_path, [row, row]))
-    assert len(edges) == 2
+    assert len(edges) == 1
 
 
 def test_one_row_can_produce_both_weights(tmp_path):
@@ -243,10 +261,17 @@ def test_one_row_can_produce_both_weights(tmp_path):
 
 
 def test_unicode_in_a_row_does_not_break_parsing(tmp_path):
-    edges, _ = parse_mappings_csv(
-        write_csv(tmp_path, [{"CVE ID": "CVE-2024-0001", "Primary Impact": "T1190—é"}])
+    """Unicode in an unread column is harmless; unicode glued onto a technique id makes the
+    token invalid, so it is counted as lost rather than becoming a node id that matches
+    nothing. The valid token in the same cell survives."""
+    edges, skipped = parse_mappings_csv(
+        write_csv(
+            tmp_path,
+            [{"CVE ID": "CVE-2024-0001", "Primary Impact": "T1190; T1059—é", "Phase": "Étape 2"}],
+        )
     )
-    assert edges[0].dst == "technique:T1190—é"
+    assert [e.dst for e in edges] == ["technique:T1190"]
+    assert skipped == 1
 
 
 def test_sql_shaped_cve_id_is_stored_verbatim(tmp_path):

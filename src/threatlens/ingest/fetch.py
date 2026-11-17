@@ -6,7 +6,6 @@ reproducible results across evaluations.
 
 from __future__ import annotations
 
-import csv
 import hashlib
 import json
 import logging
@@ -21,6 +20,8 @@ from pathlib import Path
 
 import httpx
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
+
+from threatlens.ingest.mappings import read_mappings_rows
 
 logger = logging.getLogger(__name__)
 
@@ -419,16 +420,17 @@ def collect_scoped_cve_ids(
     if mappings_path is not None:
         if not mappings_path.exists():
             raise FileNotFoundError(f"Mappings file not found at {mappings_path}")
-        with open(mappings_path, newline="", encoding="utf-8") as fh:
-            reader = csv.DictReader(fh)
-            for row in reader:
-                raw_id = (row.get("CVE ID") or "").strip().upper()
-                if not raw_id:
-                    continue
-                if CVE_ID_PATTERN.match(raw_id):
-                    valid_cves.add(raw_id)
-                else:
-                    invalid_cves.add(raw_id)
+        # The same reader the parser uses, so this file's byte-order mark and column checks
+        # are handled in one place. Reading it separately as plain utf-8 collected no CVEs at
+        # all, leaving the NVD pull covering the KEV catalog only.
+        for row in read_mappings_rows(mappings_path, required=("CVE ID",)):
+            raw_id = (row.get("CVE ID") or "").strip().upper()
+            if not raw_id:
+                continue
+            if CVE_ID_PATTERN.match(raw_id):
+                valid_cves.add(raw_id)
+            else:
+                invalid_cves.add(raw_id)
 
     if kev_data is None:
         close_client = False
