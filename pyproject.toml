@@ -34,6 +34,9 @@ exclude = ["**/AGENTS.md"]
 
 [dependency-groups]
 dev = [
+    "diff-cover>=11.0.3",
+    "hypothesis>=6.170.15",
+    "mutmut>=3.8.1",
     "mypy>=2.4.1",
     "pre-commit>=4.7.0",
     "pytest>=9.2.0",
@@ -77,6 +80,21 @@ disallow_untyped_defs = true
 disallow_incomplete_defs = true
 warn_unused_ignores = true
 warn_redundant_casts = true
+
+[tool.mutmut]
+# Mutation testing: mutmut makes small deliberate bugs in this code and checks a test fails
+# for each. Scoped to the pure, unit-tested modules, where a surviving mutant means a missing
+# assertion rather than a missing database. Runs weekly in CI (mutation.yml); needs fork, so
+# not on Windows outside WSL.
+source_paths = ["src/"]
+only_mutate = [
+    "src/threatlens/ingest/mappings.py",
+    "src/threatlens/ingest/nvd.py",
+    "src/threatlens/ingest/attack.py",
+    "src/threatlens/eval/metrics.py",
+]
+pytest_add_cli_args_test_selection = ["-m", "not db and not eval and not slow", "tests/unit/"]
+also_copy = ["pyproject.toml"]
 
 [tool.coverage.run]
 source = ["threatlens"]

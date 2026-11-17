@@ -1,0 +1,86 @@
+name: Mutation testing
+
+# mutmut makes small deliberate bugs in the parsers and metrics — flips a comparison, drops a
+# condition, changes a constant — and checks some test fails for each one. A mutant that
+# survives marks code the suite would let break silently. Coverage says a line ran; this
+# says a test would notice if it were wrong.
+#
+# A report, not a gate: it runs weekly and on demand, because it is slow and because a
+# surviving mutant needs a person to judge whether it matters. It also runs on any pull
+# request that changes this file, so a broken workflow is caught before it merges.
+
+on:
+  schedule:
+    - cron: "0 4 * * 1" # Mondays, 04:00 UTC
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - ".github/workflows/mutation.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mutation-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHONDONTWRITEBYTECODE: "1"
+  HYPOTHESIS_PROFILE: ci
+
+jobs:
+  mutmut:
+    name: Mutation testing (parsers and metrics)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          enable-cache: true
+
+      - name: Sync dependencies
+        run: uv sync --locked --all-groups
+
+      # Scope and test selection are configured under [tool.mutmut] in pyproject.toml.
+      - name: Run mutmut
+        run: uv run mutmut run --max-children 4
+
+      # `mutmut results` lists every mutant no test killed, as `module.x_function__mutmut_N: status`.
+      # The summary groups them by function, so the weakest spots are visible without
+      # downloading anything. "no tests" means no unit test reaches that function at all —
+      # expected for the ingest_* functions, whose tests need Postgres.
+      - name: Summarise
+        if: always()
+        run: |
+          mkdir -p test-results
+          uv run mutmut results > test-results/mutmut-results.txt 2>&1 || true
+          results=test-results/mutmut-results.txt
+          {
+            echo "## Mutation testing"
+            echo
+            echo "| Status | Mutants |"
+            echo "|---|---|"
+            sed -E 's/.*: //' "$results" | sort | uniq -c | awk '{n=$1; $1=""; print "| " substr($0,2) " | " n " |"}'
+            echo
+            echo "### Where mutants survive or go untested"
+            echo
+            echo "| Mutants | Function | Status |"
+            echo "|---|---|---|"
+            sed -E 's/^ +//; s/__mutmut_[0-9]+:/:/; s/\.x_/ /' "$results" \
+              | awk -F': ' '{c[$1 "|" $2]++} END {for (k in c) {split(k, a, "|"); print c[k] "|" a[1] "|" a[2]}}' \
+              | sort -t'|' -k1,1nr | head -n 25 \
+              | awk -F'|' '{print "| " $1 " | `" $2 "` | " $3 " |"}'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the mutation report
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: mutation-report
+          path: test-results/mutmut-results.txt
+          if-no-files-found: warn
+          retention-days: 30

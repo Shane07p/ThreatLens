@@ -21,6 +21,13 @@ rather than an accident.
 see them. Integration tests connect through `THREATLENS_TEST_DSN` and truncate their
 tables in a fixture.
 
+## Beyond example tests
+
+Parsers and anything taking untrusted input also get property tests (Hypothesis) in
+`test_<module>_properties.py`: state an invariant, let it generate the inputs. CI checks
+coverage of each PR's changed lines (diff-cover) and runs mutation testing weekly (mutmut,
+Linux only). Details: [testing.md](../docs/conventions/testing.md#beyond-example-tests).
+
 ## Test-case report
 
 `uv run pytest -m "not eval" --case-report=test-results/test-cases.csv` (with `=`) lists every test

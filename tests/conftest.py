@@ -16,10 +16,19 @@ import socket
 
 import psycopg
 import pytest
+from hypothesis import settings
 
 # The test-case report (`--case-report=PATH`). Importing its hooks into this namespace is
 # what registers them with pytest; see tests/case_report.py.
 from case_report import pytest_addoption, pytest_configure  # noqa: F401
+
+# Property-based tests. CI derandomizes, so a red build always reproduces with the same
+# inputs instead of failing on one unlucky draw and passing on the rerun; local runs explore
+# fresh inputs each time. No deadline: per-example timing on Windows and shared CI runners is
+# too uneven to mean anything.
+settings.register_profile("ci", max_examples=200, derandomize=True, deadline=None)
+settings.register_profile("dev", max_examples=100, deadline=None)
+settings.load_profile(os.getenv("HYPOTHESIS_PROFILE", "dev"))
 
 FIXTURES = os.path.join(os.path.dirname(__file__), "fixtures")
 

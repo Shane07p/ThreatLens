@@ -44,3 +44,7 @@ htmlcov/
 
 # Test-case report from `pytest --case-report` (CI uploads it as a build artifact)
 test-results/
+
+# Hypothesis example database and mutmut's working copy
+.hypothesis/
+mutants/

@@ -17,6 +17,8 @@ concurrency:
 
 env:
   PYTHONDONTWRITEBYTECODE: "1"
+  # Property-based tests use a fixed seed in CI, so a failure reproduces exactly.
+  HYPOTHESIS_PROFILE: ci
 
 # Actions are pinned to full commit SHAs, with the version in a trailing comment. A tag can
 # be moved to point at different code; a SHA cannot. Dependabot bumps both together.
@@ -93,8 +95,10 @@ jobs:
       THREATLENS_TEST_DSN: postgresql://threatlens:threatlens@localhost:5432/threatlens_test
 
     steps:
+      # Full history, so diff-cover can compare this branch against its base.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 0
           persist-credentials: false
 
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
@@ -119,11 +123,27 @@ jobs:
         run: >-
           uv run pytest -m "not eval" --timeout=120 --tb=short
           --cov --cov-report=term --cov-report=html:test-results/coverage-html
+          --cov-report=xml:test-results/coverage.xml
           --cov-fail-under=80 --case-report=test-results/test-cases.csv
 
       - name: Coverage summary
         if: always()
         run: uv run coverage report --format=markdown >> "$GITHUB_STEP_SUMMARY" || true
+
+      # Coverage of only the lines this pull request changes. The 80% floor on the whole
+      # codebase cannot see a new function arriving untested while the rest keeps the total
+      # up; this can. The base branch comes in through the environment, never interpolated
+      # into the script.
+      - name: Coverage of changed lines
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          status=0
+          uv run diff-cover test-results/coverage.xml --compare-branch="origin/$BASE_REF" \
+            --fail-under=80 --markdown-report test-results/diff-coverage.md || status=$?
+          cat test-results/diff-coverage.md >> "$GITHUB_STEP_SUMMARY" || true
+          exit "$status"
 
       # One row per test — level, technique, positive/negative, security, input, expected,
       # and what actually happened in this run. Kept even when tests fail, which is when
