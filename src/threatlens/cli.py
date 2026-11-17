@@ -87,11 +87,14 @@ def config_cmd(
 ) -> None:
     """Show current application settings loaded from environment or defaults.
 
-    Masks sensitive values such as NVD API keys. Use --json / -j for JSON output.
+    Masks secrets — the database password and the NVD API key — so the output is safe to
+    paste into a bug report. Use --json / -j for JSON output.
     """
+    from threatlens.graph.store import redact_dsn
+
     s = get_settings()
     raw_dict = {
-        "database_url": s.database_url,
+        "database_url": redact_dsn(s.database_url),
         "nvd_api_key": "****" if s.nvd_api_key else None,
         "provider": s.provider,
         "model": s.model,
