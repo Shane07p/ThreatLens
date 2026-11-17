@@ -32,12 +32,47 @@ NVD_DETAIL = "https://nvd.nist.gov/vuln/detail/"
 # ---------------------------------------------------------------------------
 
 
+def _as_dict(value: object) -> dict:
+    """`value` if it is a dict, else an empty one.
+
+    NVD records are large, nested, and have changed shape before. A field holding null, a
+    string, or a list where a dict belongs must cost that field, not the whole ingest run.
+    """
+    return value if isinstance(value, dict) else {}
+
+
+def _as_list(value: object) -> list:
+    """`value` if it is a list, else an empty one. See `_as_dict`."""
+    return value if isinstance(value, list) else []
+
+
+def _as_str(value: object) -> str | None:
+    """`value` if it is a non-empty string, else None."""
+    return value if isinstance(value, str) and value else None
+
+
 def _english_description(raw: dict) -> str | None:
     """Extract the English-language description, ignoring translations."""
-    for d in raw.get("descriptions", []):
+    for d in _as_list(raw.get("descriptions")):
+        d = _as_dict(d)
         if d.get("lang") == "en":
-            return d.get("value")
+            return _as_str(d.get("value"))
     return None
+
+
+def _score(value: object) -> float | None:
+    """A CVSS base score as a float in 0–10, or None.
+
+    Anything else — a bool, an unparseable string, a number outside the scale — is not a
+    score, and inventing one would be worse than having none.
+    """
+    if isinstance(value, bool):
+        return None
+    try:
+        score = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    return score if 0.0 <= score <= 10.0 else None
 
 
 def _cvss(raw: dict) -> tuple[float | None, str | None, str | None]:
@@ -47,17 +82,12 @@ def _cvss(raw: dict) -> tuple[float | None, str | None, str | None]:
     never 0.0. A fabricated 0.0 reads as "no risk" in an answer someone
     may act on.
     """
-    metrics = raw.get("metrics", {})
+    metrics = _as_dict(raw.get("metrics"))
     for key, version in (("cvssMetricV31", "3.1"), ("cvssMetricV40", "4.0")):
-        entries = metrics.get(key) or []
+        entries = _as_list(metrics.get(key))
         if entries:
-            data = entries[0].get("cvssData", {})
-            score = data.get("baseScore")
-            return (
-                float(score) if score is not None else None,
-                version,
-                data.get("vectorString"),
-            )
+            data = _as_dict(_as_dict(entries[0]).get("cvssData"))
+            return _score(data.get("baseScore")), version, _as_str(data.get("vectorString"))
     return None, None, None
 
 
@@ -65,11 +95,16 @@ def parse_cve_record(raw: dict) -> Node | None:
     """Turn a single NVD CVE JSON object into a Node, or None if unusable.
 
     Expects the inner ``cve`` dict from the NVD 2.0 API response or top-level wrapper.
+
+    Tolerant of malformed fields: a wrong-typed field is dropped, never raised on, so one
+    bad record cannot end an ingest run. The id must be a non-empty string — a record whose
+    id is `true` or `1` returns None rather than becoming a node called `cve:True`.
     """
-    if "cve" in raw and isinstance(raw["cve"], dict):
+    raw = _as_dict(raw)
+    if isinstance(raw.get("cve"), dict):
         raw = raw["cve"]
-    cve_id = raw.get("id")
-    if not cve_id:
+    cve_id = _as_str(raw.get("id"))
+    if cve_id is None:
         return None
 
     score, version, vector = _cvss(raw)
@@ -85,12 +120,12 @@ def parse_cve_record(raw: dict) -> Node | None:
             "cvss_score": score,
             "cvss_version": version,
             "cvss_vector": vector,
-            "published": raw.get("published"),
-            "last_modified": raw.get("lastModified"),
+            "published": _as_str(raw.get("published")),
+            "last_modified": _as_str(raw.get("lastModified")),
             "references": [
-                r.get("url")
-                for r in raw.get("references", [])
-                if isinstance(r, dict) and r.get("url")
+                url
+                for r in _as_list(raw.get("references"))
+                if (url := _as_str(_as_dict(r).get("url")))
             ],
         },
     )
