@@ -230,6 +230,53 @@ addopts = "-q --strict-markers"
 **CI gates on `-m "not eval"` only.** An LLM call is non-deterministic and costs money; a
 red build caused by model drift teaches everyone to ignore the build.
 
+## Beyond example tests
+
+Coverage says a line ran. These three ask harder questions.
+
+### Property-based tests (Hypothesis)
+
+An example test checks one input you thought of. A property test states a rule that must
+hold for *every* input and lets Hypothesis generate hundreds, then shrinks any failure to the
+smallest input that breaks it. Write one when a function takes untrusted or varied input —
+parsers above all. Files are named `test_<module>_properties.py`.
+
+Good properties are invariants, not re-implementations: "never raises on any record", "every
+token is either kept or counted", "no edge points at a missing node", "the password never
+appears in the output". On its first run this found that `parse_cve_record` crashed on any
+field holding `null` or the wrong type, and accepted `true` as a CVE id.
+
+CI runs with a fixed seed (`HYPOTHESIS_PROFILE=ci`), so a failure always reproduces; local
+runs explore fresh inputs each time.
+
+### Coverage of changed lines (diff-cover)
+
+On every pull request, CI checks that at least 80% of the *lines that pull request changed*
+are covered, and posts the per-file result to the run summary. The 80% floor on the whole
+codebase cannot see a new function arriving untested while older code keeps the total up.
+Locally:
+
+```bash
+uv run pytest -m "not eval" --cov --cov-report=xml
+uv run diff-cover coverage.xml --compare-branch=origin/main
+```
+
+### Mutation testing (mutmut)
+
+mutmut changes the code in small ways — `<` to `<=`, `and` to `or`, a constant to another —
+and runs the tests against each change. A **surviving mutant** is a change no test noticed:
+code the suite would let break silently. Hand mutation has already caught four tests here
+that passed whatever the code did.
+
+Scoped in `pyproject.toml` to the pure, unit-tested modules. It is slow, so it runs weekly and
+on demand as `.github/workflows/mutation.yml`, and is a report, not a gate: a survivor needs a
+person to decide whether it matters. mutmut needs `fork`, so it runs on Linux and macOS, or
+in WSL on Windows:
+
+```bash
+uv run mutmut run     # then: uv run mutmut results, uv run mutmut browse
+```
+
 ## Test-case report
 
 Every test can be listed as a row of a CSV — what it checks, how, and what happened:
