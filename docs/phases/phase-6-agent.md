@@ -89,7 +89,7 @@ E "not run." Say so honestly rather than shipping a half-working agent.
    the assembled evidence; cite every claim by node id as `[^node_id]`; if the evidence does
    not support a claim, say so rather than filling the gap.
 
-   The model writes **node ids, never URLs** ([coderule.md](../rules/coderule.md)). URLs are
+   The model writes **node ids, never URLs** ([code.md](../conventions/code.md)). URLs are
    resolved at render time, which makes a hallucinated link structurally impossible.
 
 5. **Post-check, in code not in the prompt.** Before returning:

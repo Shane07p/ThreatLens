@@ -1,0 +1,59 @@
+# Dependency updates. Security updates are separate: they ignore this schedule and open as
+# soon as an advisory is published (enabled under Settings → Code security).
+#
+# Monthly, grouped, and cooled down. Two maintainers review every pull request, so the aim
+# is one routine update PR per ecosystem per month, with majors split out so a breaking
+# change gets read rather than merged in a batch.
+#
+# Deliberately not managed: the pgvector/pgvector:pg16 image in docker-compose.yml and
+# ci.yml. Its tag encodes the Postgres major version, and a bump to pg17/pg18 cannot read
+# an existing data volume. That upgrade is a decision, not a routine update.
+
+version: 2
+
+updates:
+  - package-ecosystem: uv
+    directory: /
+    schedule:
+      interval: monthly
+    # A release must be this old before it is proposed. Most malicious or broken releases
+    # are yanked within days; waiting costs nothing for a project with no deadline on
+    # dependency freshness.
+    cooldown:
+      default-days: 7
+      semver-major-days: 14
+    groups:
+      python-minor-and-patch:
+        patterns: ["*"]
+        update-types: [minor, patch]
+    commit-message:
+      prefix: chore
+      include: scope
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    cooldown:
+      default-days: 7
+    # Actions are pinned to commit SHAs with the version in a comment; Dependabot bumps both.
+    groups:
+      github-actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: ci
+      include: scope
+
+  - package-ecosystem: pre-commit
+    directory: /
+    schedule:
+      interval: monthly
+    cooldown:
+      default-days: 7
+    groups:
+      pre-commit-hooks:
+        patterns: ["*"]
+    commit-message:
+      prefix: chore
+      include: scope

@@ -11,7 +11,7 @@ from collections.abc import Iterable
 from importlib import resources
 
 from sqlalchemy import create_engine, text
-from sqlalchemy.engine import Connection, Engine
+from sqlalchemy.engine import Connection, Engine, Row
 
 from threatlens.models import Edge, Node
 
@@ -160,7 +160,7 @@ def edge_counts(conn: Connection) -> dict[str, int]:
     return {r.kind: r.n for r in rows}
 
 
-def _row_to_node(row) -> Node:
+def _row_to_node(row: Row) -> Node:
     return Node(
         id=row.id,
         kind=row.kind,

@@ -12,15 +12,19 @@ wheels/
 # Secrets
 .env
 
-# Claude Code — local only
+# Agent instructions live in AGENTS.md, which every supported agent reads. Claude Code
+# reads a CLAUDE.md or CLAUDE.local.md *instead of* AGENTS.md when one exists, so
+# committing either would silently switch the shared instructions off for everyone.
+# Personal instructions belong in ~/.claude/CLAUDE.md.
 CLAUDE.md
+CLAUDE.local.md
 .claude/settings.local.json
 
 # Local working docs — not published
 task-division.md
 
 # Data snapshots — large and reproducible from data/manifest.json.
-# data/eval/ and data/manifest.json are deliberately tracked (see .claude/decisions.md D13).
+# data/eval/ and data/manifest.json are deliberately tracked (see docs/design/decisions.md D13).
 data/raw/
 !data/eval/
 !data/manifest.json
@@ -32,3 +36,8 @@ out/
 
 # Local-only compose overrides (per-machine port remaps etc.)
 docker-compose.override.yml
+
+# Coverage data from `pytest --cov`
+.coverage
+.coverage.*
+htmlcov/

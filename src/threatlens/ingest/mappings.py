@@ -18,8 +18,12 @@ from __future__ import annotations
 import csv
 import logging
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from threatlens.models import Edge, Node
+
+if TYPE_CHECKING:
+    from sqlalchemy.engine import Connection
 
 log = logging.getLogger(__name__)
 
@@ -109,7 +113,7 @@ def partition_edges(
 def ingest_mappings(
     mappings_path: Path,
     sha256: str,
-    conn,
+    conn: Connection,
 ) -> tuple[int, int]:
     """Parse mappings CSV, filter against existing nodes, upsert ENABLES edges.
 

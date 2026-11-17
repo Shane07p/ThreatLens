@@ -5,9 +5,10 @@ technique, a plain-English question — and it traces the whole picture: what th
 how it's exploited, what an attacker does next, who uses it, and how to defend. Every claim
 carries a citation.
 
-> **Status: in development.** The knowledge graph, retrieval pipeline, and evaluation
-> harness are being built in phases. No results to report yet — this README will carry the
-> ablation table when there is one.
+> **Status: in development.** The ATT&CK graph, traversal, and CVE ingestion are built;
+> retrieval and evaluation are in progress. No results to report yet — this README will
+> carry the ablation table when there is one. Current status:
+> [docs/phases/phases.md](docs/phases/phases.md).
 
 ## The idea
 
@@ -43,13 +44,14 @@ threatlens path CVE-2021-44228              # traversal only, no LLM
 ## Stack
 
 Python 3.12 · PostgreSQL + pgvector · MITRE ATT&CK (STIX 2.1) · NVD · CVE→ATT&CK Mappings
-Explorer · `bge-small-en-v1.5` embeddings · BM25 + RRF + cross-encoder reranking · Anthropic
-SDK · Typer
+Explorer · `bge-small-en-v1.5` embeddings · BM25 + RRF + cross-encoder reranking ·
+LangChain/LangGraph for the agent layer only · Typer
 
 ## Setup
 
 > Commands beyond `db init` land as their phases are implemented. See
-> [.claude/phases/phases.md](.claude/phases/phases.md) for current status.
+> [docs/phases/phases.md](docs/phases/phases.md) for current status. To contribute, read
+> [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ### 1. Prerequisites
 
@@ -87,8 +89,8 @@ Fill in:
 | `THREATLENS_PROVIDER` | yes | `anthropic` \| `openai` \| `gemini` \| `groq` \| `deepseek` \| `qwen` \| `kimi` |
 | `<PROVIDER>_API_KEY` | phase 6+ | only the one for the provider you selected |
 
-`.env` is gitignored. Never commit real keys — the repo goes public eventually,
-and a key in any commit is compromised the moment it does.
+`.env` is gitignored. Never commit real keys — the repository is public, so a key
+in any commit is compromised the moment it is pushed.
 
 ### 4. Database
 
@@ -140,7 +142,7 @@ First run of `embed` downloads `bge-small-en-v1.5` (~130 MB); the reranker
 | CI red on formatting | run `uv run ruff format .` and commit |
 
 Deeper notes on data sources, provider selection, and the graph schema are in
-[.claude/](.claude/); the build plan is in [.claude/phases/phases.md](.claude/phases/phases.md).
+[docs/](docs/README.md); the build plan is in [docs/phases/phases.md](docs/phases/phases.md).
 
 ## Evaluation
 
@@ -170,9 +172,13 @@ well-evaluated, usable implementation.
 
 ## Documentation
 
-- [.claude/](.claude/) — architecture, graph schema, data sources, retrieval design,
-  evaluation protocol, testing strategy, and the eight-phase build plan
-- [.claude/design/decisions.md](.claude/design/decisions.md) — every  deviation from the source spec, with reasons
+- [ARCHITECTURE.md](ARCHITECTURE.md) — the code map: what each module owns and must not do
+- [docs/](docs/README.md) — graph schema, data sources, retrieval design, evaluation
+  protocol, conventions, and the eight-phase build plan
+- [docs/design/decisions.md](docs/design/decisions.md) — every deviation from the source
+  spec, with reasons
+- [CONTRIBUTING.md](CONTRIBUTING.md) · [CONTRIBUTORS.md](CONTRIBUTORS.md) ·
+  [SECURITY.md](SECURITY.md) · [AGENTS.md](AGENTS.md) for AI coding agents
 
 ## Attribution
 

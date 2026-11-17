@@ -47,7 +47,7 @@ Considered and rejected:
 
 - **Vertical slice first** — one person proves the interface end to end, then three fan out.
   Safer, but idles three people at the start, which defeats the reason for adding them. The
-  data model is already fully specified in [.claude/design/graph-schema.md](../../../.claude/design/graph-schema.md),
+  data model is already fully specified in [.claude/design/graph-schema.md](../../design/graph-schema.md),
   so the interface is transcription, not speculation. The risk it guards against is small.
 - **Independent modules, integrate late** — zero coordination up front, but all the pain
   concentrates into one integration task and you end up writing adapters between four
@@ -131,7 +131,7 @@ conversation, not a silent commit.
   codebase that reads `os.environ`.** Holds `DATABASE_URL`, `NVD_API_KEY`, provider settings,
   and the retrieval knobs (`MAX_DEPTH`, `NODE_BUDGET`, `MIN_SHARED_ACTORS`, …) so they can be
   recorded in eval metadata later.
-- `schema.sql` — the DDL from [.claude/design/graph-schema.md](../../../.claude/design/graph-schema.md):
+- `schema.sql` — the DDL from [.claude/design/graph-schema.md](../../design/graph-schema.md):
   `nodes`, `node_chunks`, `edges`, `ingest_runs`, indexes, and
   `CREATE EXTENSION IF NOT EXISTS vector`. `node_chunks` is created now and left empty; Phase 3
   fills it.
@@ -257,7 +257,7 @@ collisions with two people. Protect `main`, one branch per track (`track-a-found
 
 ## Testing
 
-Follows [.claude/rules/testing.md](../../../.claude/rules/testing.md).
+Follows [.claude/rules/testing.md](../../conventions/testing.md).
 
 **Tests come first on Tracks B and D** — the parsers. That is the project rule, and it earns
 its keep here specifically: a STIX parser and a CVSS fallback chain both fail *silently* and
