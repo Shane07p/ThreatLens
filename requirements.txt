@@ -34,7 +34,7 @@ rank-bm25>=0.2.2              # lexical half of hybrid retrieval
 # ── Phase 6 — agent loop + LLM providers ─────────────────────────────────────
 langchain>=0.3                # init_chat_model: one interface across providers
 langgraph>=0.2                # the agent loop, with checkpointing
-langchain-anthropic>=0.3      # Claude (default provider)
+langchain-anthropic>=1.7.10      # Claude (default provider)
 
 # Add only the providers you actually have keys for.
 # Qwen and Kimi need no package — they go through langchain-openai's ChatOpenAI
