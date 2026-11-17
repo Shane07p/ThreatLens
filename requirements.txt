@@ -13,7 +13,7 @@
 
 # ── Phase 1 — ATT&CK ingestion ────────────────────────────────────────────────
 stix2>=3.0.1                  # MITRE's own STIX 2.1 parser
-psycopg[binary]>=3.2          # Postgres driver
+psycopg[binary]>=3.3.8          # Postgres driver
 SQLAlchemy>=2.1.8               # connection/engine management, not the ORM
 typer>=0.29.0                   # CLI
 python-dotenv>=1.2.4            # .env loading
