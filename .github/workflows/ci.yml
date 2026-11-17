@@ -118,8 +118,8 @@ jobs:
       - name: Run tests (unit + integration, excluding eval)
         run: >-
           uv run pytest -m "not eval" --timeout=120 --tb=short
-          --cov --cov-report=term --cov-fail-under=80
-          --case-report=test-results/test-cases.csv
+          --cov --cov-report=term --cov-report=html:test-results/coverage-html
+          --cov-fail-under=80 --case-report=test-results/test-cases.csv
 
       - name: Coverage summary
         if: always()
@@ -134,6 +134,17 @@ jobs:
         with:
           name: test-cases
           path: test-results/test-cases.csv
+          if-no-files-found: error
+          retention-days: 30
+
+      # The browsable line-by-line coverage report — which lines and branches the suite never
+      # reached, file by file. Download it from the run page and open index.html.
+      - name: Upload the coverage report
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: coverage-html
+          path: test-results/coverage-html/
           if-no-files-found: error
           retention-days: 30
 
