@@ -6,9 +6,13 @@ labelled ground truth for evaluation: 20% is held out and frozen before any
 retrieval code exists.
 
 Primary impact carries full weight (1.0); secondary impact is a weaker
-signal (0.5). A row with no CVE ID is logged and counted as skipped,
-not silently swallowed — the distinction between "ignored" and "lost"
-matters for data quality.
+signal (0.5). A row with no CVE ID, or a technique token that is not an
+ATT&CK id, is logged and counted as skipped, not silently swallowed — the
+distinction between "ignored" and "lost" matters for data quality.
+
+Only the two impact columns become edges. The upstream file also carries
+`Exploitation Technique` and `Uncategorized` columns; those are deliberately
+not read, because the design weights a CVE's link to a technique by impact.
 
 Must not: import from retrieval/, agent/, or llm/.
 """
@@ -17,6 +21,7 @@ from __future__ import annotations
 
 import csv
 import logging
+import re
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -29,46 +34,134 @@ log = logging.getLogger(__name__)
 
 SOURCE = "mappings-explorer"
 
+REQUIRED_COLUMNS = ("CVE ID", "Primary Impact", "Secondary Impact")
+IMPACT_WEIGHTS = (("Primary Impact", 1.0), ("Secondary Impact", 0.5))
+
+# The only shape a technique id may take. Anything else in a technique cell is a malformed
+# token: counted as lost, never turned into a node id that matches nothing.
+_TECHNIQUE_ID = re.compile(r"^T\d{4}(?:\.\d{3})?$")
+_CELL_SEPARATORS = re.compile(r"[;,]")
+
+
+def read_mappings_rows(
+    path: Path, required: tuple[str, ...] = REQUIRED_COLUMNS
+) -> list[dict[str, str]]:
+    """Read the mappings CSV into one dict per row, tolerating a byte-order mark.
+
+    The upstream file begins with a UTF-8 BOM. Read as plain `utf-8`, the BOM becomes part of
+    the first header, every lookup of `"CVE ID"` misses, and the whole file is skipped without
+    an error. `utf-8-sig` strips the BOM when present and is a no-op when it is not.
+
+    Shared by the parser and by `fetch.collect_scoped_cve_ids`, so both readers of this file
+    handle its format the same way.
+
+    `required` names the columns this caller reads; it defaults to everything the parser
+    needs. A reader that only wants CVE ids asks for less, rather than rejecting a file over
+    columns it never looks at.
+
+    Raises ValueError when a required column is missing. A renamed upstream column would
+    otherwise skip every row and report success, which is how the BOM went unnoticed.
+    """
+    with open(path, newline="", encoding="utf-8-sig") as fh:
+        reader = csv.DictReader(fh)
+        found = reader.fieldnames or []
+        missing = [c for c in required if c not in found]
+        if missing:
+            raise ValueError(
+                f"{path.name} is missing required column(s) {missing}; found {list(found)}"
+            )
+        return list(reader)
+
+
+def _technique_ids(cell: str) -> tuple[list[str], int]:
+    """Split one cell into ATT&CK technique ids.
+
+    Upstream packs several techniques into one cell (`T1499; T1098`) — 86 cells in the
+    real file. Treating the cell as a single id produced `technique:T1499; T1098`, which
+    matches no node and was later dropped as an absent technique.
+
+    Returns (valid ids in cell order, count of tokens that are not technique ids).
+    """
+    valid: list[str] = []
+    invalid = 0
+    for token in _CELL_SEPARATORS.split(cell):
+        token = token.strip().upper()
+        if not token:
+            continue
+        if _TECHNIQUE_ID.match(token):
+            valid.append(token)
+        else:
+            invalid += 1
+    return valid, invalid
+
 
 def parse_mappings_csv(path: Path) -> tuple[list[Edge], int]:
     """Parse a CVE→ATT&CK mappings CSV into ENABLES edges.
 
+    Emits one edge per (CVE, technique) pair, at its strongest weight. A technique listed
+    under both impacts, or on two rows for the same CVE, would otherwise reach the database
+    twice, and the upsert keeps whichever arrives last — so a secondary listing could
+    quietly lower a primary edge to 0.5. Edges come back in file order, so output is
+    deterministic.
+
+    Edges are emitted even for techniques that may not exist in the graph; the loader drops
+    unresolvable ones later, because the parser has no access to the graph and should not
+    need it.
+
     Returns:
-        (edges, skipped_count) — skipped rows are counted so the caller can
-        decide if the count is acceptable. The parser emits edges even for
-        techniques that may not exist in the graph; the *loader* drops
-        unresolvable ones later, because the parser has no access to the
-        graph and should not need it.
+        (edges, skipped_count) — skipped counts rows with no CVE ID plus technique tokens
+        that are not valid ATT&CK ids.
+
+    Raises:
+        ValueError: a required column is missing, or the file has rows but yields no usable
+            mapping at all — never a legitimate result for this dataset, and the exact
+            symptom of the byte-order-mark bug.
     """
-    edges: list[Edge] = []
+    rows = read_mappings_rows(path)
+    strongest: dict[tuple[str, str], Edge] = {}
     skipped = 0
 
-    with open(path, newline="", encoding="utf-8") as fh:
-        for row in csv.DictReader(fh):
-            cve_id = (row.get("CVE ID") or "").strip()
-            if not cve_id:
-                skipped += 1
-                log.warning("mappings row with no CVE ID: %r", row)
-                continue
+    for row in rows:
+        cve_id = (row.get("CVE ID") or "").strip()
+        if not cve_id:
+            skipped += 1
+            log.warning("mappings row with no CVE ID: %r", row)
+            continue
 
-            src = Node.make_id("cve", cve_id)
+        src = Node.make_id("cve", cve_id)
 
-            for column, weight in (("Primary Impact", 1.0), ("Secondary Impact", 0.5)):
-                technique = (row.get(column) or "").strip()
-                if not technique:
-                    continue
+        for column, weight in IMPACT_WEIGHTS:
+            cell = row.get(column) or ""
+            techniques, invalid = _technique_ids(cell)
+            if invalid:
+                skipped += invalid
+                log.warning(
+                    "%d malformed technique token(s) for %s in %s: %r",
+                    invalid,
+                    cve_id,
+                    column,
+                    cell,
+                )
 
-                edges.append(
-                    Edge(
+            for technique in techniques:
+                key = (src, Node.make_id("technique", technique))
+                current = strongest.get(key)
+                if current is None or weight > current.weight:
+                    strongest[key] = Edge(
                         src=src,
-                        dst=Node.make_id("technique", technique),
+                        dst=key[1],
                         kind="ENABLES",
                         source=SOURCE,
                         weight=weight,
                         attrs={"impact": column.split()[0].lower()},
                     )
-                )
 
+    edges = list(strongest.values())
+    if rows and not edges:
+        raise ValueError(
+            f"{path.name} has {len(rows)} row(s) but no usable mappings — check the file's "
+            "encoding and column names before trusting an empty graph"
+        )
     return edges, skipped
 
 
