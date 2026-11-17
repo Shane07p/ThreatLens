@@ -5,9 +5,10 @@ technique, a plain-English question — and it traces the whole picture: what th
 how it's exploited, what an attacker does next, who uses it, and how to defend. Every claim
 carries a citation.
 
-> **Status: in development.** The ATT&CK graph, traversal, and CVE ingestion are built;
-> retrieval and evaluation are in progress. No results to report yet — this README will
-> carry the ablation table when there is one. Current status:
+> **Status: in development.** The ATT&CK graph (MITRE ATT&CK Enterprise **v19.2**, sha256
+> `dc1639caa550…`, pinned in [data/manifest.json](data/manifest.json)), traversal, and CVE
+> ingestion are built; retrieval and evaluation are in progress. No results to report yet —
+> this README will carry the ablation table when there is one. Current status:
 > [docs/phases/phases.md](docs/phases/phases.md).
 
 ## The idea
