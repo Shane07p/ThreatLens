@@ -261,3 +261,76 @@ def nodes_with_descriptions(conn: Connection) -> list[Node]:
     """All nodes that have a non-empty description (candidates for embedding)."""
     rows = conn.execute(_NODES_WITH_DESCRIPTIONS)
     return [_row_to_node(r) for r in rows]
+
+
+# ── derived edges ────────────────────────────────────────────────────────────
+
+_DELETE_DERIVED_CHAINS = text("DELETE FROM edges WHERE kind = 'CHAINS_TO'")
+
+_DERIVE_CHAINS = text("""
+    WITH tech_phase AS (
+        SELECT e.src AS technique_id, MIN((t.attrs->>'order')::int) AS phase_ix
+        FROM edges e
+        JOIN nodes t ON t.id = e.dst AND t.kind = 'tactic'
+        WHERE e.kind = 'BELONGS_TO' AND t.attrs->>'order' IS NOT NULL
+        GROUP BY e.src
+    ),
+    -- No DISTINCT here, and none needed: edges is keyed on (src, dst, kind), so an
+    -- actor cannot appear twice against the same technique. A defensive COUNT(DISTINCT)
+    -- would be unreachable code that reads like it is guarding something.
+    actor_tech AS (
+        SELECT src AS actor_id, dst AS technique_id
+        FROM edges WHERE kind = 'USES'
+    ),
+    pairs AS (
+        SELECT a.technique_id AS src_id,
+               b.technique_id AS dst_id,
+               count(*) AS shared
+        FROM actor_tech a
+        JOIN actor_tech b
+          ON b.actor_id = a.actor_id AND b.technique_id <> a.technique_id
+        JOIN tech_phase pa ON pa.technique_id = a.technique_id
+        JOIN tech_phase pb ON pb.technique_id = b.technique_id
+        WHERE pa.phase_ix < pb.phase_ix
+        GROUP BY a.technique_id, b.technique_id
+        HAVING count(*) >= :min_shared
+    )
+    INSERT INTO edges (src, dst, kind, weight, source, attrs)
+    SELECT src_id, dst_id, 'CHAINS_TO',
+           LEAST(shared::float8 / :saturation, 1.0)::real,
+           :source,
+           jsonb_build_object('shared_actors', shared)
+    FROM pairs
+""")
+
+
+def replace_chain_edges(
+    conn: Connection,
+    min_shared: int,
+    saturation: int,
+    source: str,
+) -> int:
+    """Rebuild every CHAINS_TO edge from current actor co-occurrence.
+
+    Deletes the existing derived edges before re-deriving. A chain left behind after its
+    evidence weakened keeps asserting a link the data no longer supports, and nothing in
+    the graph marks it stale — so a rebuild has to be a replacement, not a merge. Only
+    CHAINS_TO is touched; every ingested edge kind is left alone.
+
+    `min_shared` is the number of distinct actors that must use both techniques.
+    `saturation` is the count at which weight reaches 1.0; it cannot be the observed
+    maximum, because then a run producing a single pair would score it 1.0 on the
+    strength of one actor.
+
+    A technique in several tactics is placed at its earliest, so a chain out of it is not
+    suppressed by a later placement it also holds. A tactic with no position in the matrix
+    yields no chain at all rather than being treated as first.
+
+    Returns the number of edges written.
+    """
+    conn.execute(_DELETE_DERIVED_CHAINS)
+    result = conn.execute(
+        _DERIVE_CHAINS,
+        {"min_shared": min_shared, "saturation": saturation, "source": source},
+    )
+    return result.rowcount

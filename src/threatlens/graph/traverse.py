@@ -25,21 +25,29 @@ from threatlens.models import Node
 # CVE enables, what that serves, what stops it.
 PATH_EDGE_KINDS = ["ENABLES", "BELONGS_TO", "MITIGATED_BY"]
 
+# Stored actor -> technique, but the question is always "who uses this technique", which
+# starts at the technique. Answering it means walking the edge the other way.
+ACTOR_EDGE_KINDS = ["USES"]
+
 _WALK = text("""
-    WITH RECURSIVE walk(id, depth, path, cost) AS (
+    WITH RECURSIVE arcs AS (
+        SELECT src AS from_id, dst AS to_id, weight FROM edges WHERE kind = ANY(:edge_kinds)
+        UNION ALL
+        SELECT dst AS from_id, src AS to_id, weight FROM edges WHERE kind = ANY(:reverse_kinds)
+    ),
+    walk(id, depth, path, cost) AS (
         SELECT n.id, 0, ARRAY[n.id], 0.0::float8
         FROM nodes n
         WHERE n.id = ANY(:anchors)
       UNION ALL
-        SELECT e.dst,
+        SELECT a.to_id,
                w.depth + 1,
-               w.path || e.dst,
-               w.cost + (1.0 / GREATEST(e.weight, 0.01))
+               w.path || a.to_id,
+               w.cost + (1.0 / GREATEST(a.weight, 0.01))
         FROM walk w
-        JOIN edges e ON e.src = w.id
+        JOIN arcs a ON a.from_id = w.id
         WHERE w.depth < :max_depth
-          AND e.kind = ANY(:edge_kinds)
-          AND NOT e.dst = ANY(w.path)
+          AND NOT a.to_id = ANY(w.path)
     )
     SELECT best.depth, best.path, best.cost,
            n.id, n.kind, n.external_id, n.stix_id, n.name, n.description,
@@ -80,8 +88,16 @@ def traverse(
     edge_kinds: list[str],
     max_depth: int | None = None,
     node_budget: int | None = None,
+    *,
+    reverse_kinds: list[str] | None = None,
 ) -> list[Hop]:
-    """Walk outward from `anchors` along `edge_kinds`, cheapest routes first.
+    """Walk outward from `anchors`, cheapest routes first.
+
+    `edge_kinds` are followed src -> dst; `reverse_kinds` are followed dst -> src. A kind
+    given in both is walked both ways. Direction is a parameter rather than a property of
+    the edge because the same stored edge answers different questions from each end:
+    `USES` read forwards is "what does this actor do", read backwards it is "who does
+    this", and only the second starts from a technique.
 
     Returns one Hop per reachable node, including the anchors themselves at depth 0,
     ordered by cost ascending. A node reachable by several routes appears once, via
@@ -94,7 +110,8 @@ def traverse(
     Raises nothing for an unknown anchor — it simply contributes no rows. Query-time
     code that needs an id to exist should check with `get_node` and raise there.
     """
-    if not anchors or not edge_kinds:
+    reverse_kinds = reverse_kinds or []
+    if not anchors or not (edge_kinds or reverse_kinds):
         return []
 
     if max_depth is None or node_budget is None:
@@ -109,6 +126,7 @@ def traverse(
         {
             "anchors": anchors,
             "edge_kinds": edge_kinds,
+            "reverse_kinds": reverse_kinds,
             "max_depth": max_depth,
             "node_budget": node_budget,
         },

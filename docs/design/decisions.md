@@ -272,3 +272,53 @@ guard a path cannot repeat a node, so nothing beyond six hops survives.
   `pytest.mark.timeout`. A results-based cycle test passes either way and proves nothing.
 - `CHAINS_TO` is derived from actor co-occurrence and is symmetric before kill-chain
   ordering is applied, so dense cycles are the ordinary shape here, not a corner case.
+
+### D18 — Tactic order is read from the matrix object, never hard-coded
+
+[graph-schema.md](graph-schema.md) specifies `tactic_order` as *"a static map of the 14
+Enterprise tactic shortnames to their kill-chain index"*. Written as a literal, that map is
+already wrong: v19.2 renamed TA0005 Defense Evasion to **Stealth** and split **TA0112 Defense
+Impairment** out of it, so the enterprise matrix has fifteen tactics, not fourteen.
+
+Nothing on an `x-mitre-tactic` object records its position. The `x-mitre-matrix` object
+carries `tactic_refs` in kill-chain order — reconnaissance first, impact last — and that is
+the only place the sequence appears.
+
+**Consequences:**
+- The parser reads the order off the matrix and stores it as `attrs.order` on each tactic
+  node, so chain derivation reads the graph rather than re-parsing the bundle.
+- A tactic absent from the matrix gets `order: None`, not a sentinel index. A fabricated `0`
+  would read as "first" and chain that technique to everything downstream of it.
+- The real-bundle test asserts the orders form a dense `0..n-1` range and that
+  reconnaissance is first, rather than pinning a count that moves every release.
+
+### D19 — CHAINS_TO saturates at a fixed count, and min_shared_actors=3 stands
+
+The derivation SQL in [graph-schema.md](graph-schema.md) normalizes weight as
+`count(*) / max_shared`. Taking `max_shared` from the run's own maximum scores the single
+strongest pair 1.0 however thin its evidence, and shifts every weight in the graph whenever
+one new pair appears. Weight is therefore `LEAST(shared / 10, 1.0)` against a fixed
+saturation constant.
+
+On v19.2 the threshold of 3 yields **9,555 chains**, more than every ingested edge kind
+combined. Spot-checked as the phase doc requires:
+
+*Strongest edges* read as textbook intrusion sequences — Spearphishing Attachment → Malicious
+File (75 shared actors), PowerShell → Ingress Tool Transfer (58), Windows Command Shell →
+Ingress Tool Transfer (53), Registry Run Keys → Ingress Tool Transfer (45).
+
+*At the threshold*, where a third of the edges sit, a random ten was roughly seven plausible
+(Phishing for Information → Exploit Public-Facing Application; Local Account → Data Encrypted
+for Impact) to three weak (Code Repositories → Proxy; Windows Command Shell → Fast Flux DNS).
+Mixed, but not noise-dominated, so the threshold stays.
+
+**Consequences:**
+- These edges are inferred, not published. They say enough documented actors use both
+  techniques in kill-chain order — **not** that anyone observed A followed by B. Anywhere
+  they are surfaced must say so; describing them as attack-path data is overclaiming.
+- The shared-actor count is stored on each edge so any single chain can be challenged.
+- The derivation replaces rather than merges: a chain whose evidence weakened must vanish,
+  because nothing in the graph would mark it stale.
+- Density has a latency cost. Traversing `CHAINS_TO` from one technique measures 19 ms at
+  depth 1, 34 ms at depth 2 and **494 ms at depth 3** — roughly 15× per level. The
+  `max_depth=3` default is now load-bearing for latency as well as for semantics.
