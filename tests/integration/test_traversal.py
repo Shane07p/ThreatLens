@@ -277,6 +277,7 @@ def test_zero_depth_returns_only_the_anchors(conn):
     assert ids(hops) == ["cve:C1"]
 
 
+@pytest.mark.security
 def test_an_id_shaped_like_sql_is_a_parameter_not_a_fragment(conn):
     hostile = "cve:'; DROP TABLE nodes; --"
     build(conn, [node("cve:C1", "cve")], [])

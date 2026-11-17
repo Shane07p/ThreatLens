@@ -242,6 +242,7 @@ def test_unicode_survives_the_round_trip(conn):
     assert get_node(conn, "technique:T0002").name == "Tëchnïque — 攻撃 🔒"
 
 
+@pytest.mark.security
 def test_sql_shaped_text_is_stored_verbatim(conn):
     """Proves the parameterized queries actually parameterize."""
     hostile = "'; DROP TABLE nodes; --"

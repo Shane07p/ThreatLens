@@ -158,6 +158,7 @@ def test_very_long_description_is_not_truncated():
     assert len(node.description) == 200_000
 
 
+@pytest.mark.security
 def test_sql_shaped_description_is_stored_verbatim():
     hostile = "'; DROP TABLE nodes; --"
     assert (
@@ -249,6 +250,7 @@ def test_unicode_in_a_row_does_not_break_parsing(tmp_path):
     assert edges[0].dst == "technique:T1190—é"
 
 
+@pytest.mark.security
 def test_sql_shaped_cve_id_is_stored_verbatim(tmp_path):
     hostile = "'; DROP TABLE edges; --"
     edges, _ = parse_mappings_csv(
