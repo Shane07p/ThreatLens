@@ -243,7 +243,9 @@ the file exists, because pytest mistakes the path for a test path before it has 
 option (explained in `tests/case_report.py`).
 
 CI writes the same file on every run and keeps it for 30 days as the `test-cases` artifact
-on the run's summary page. It is generated, never hand-edited: the `actual` and `status`
+on the run's summary page, next to `coverage-html` — a browsable line-by-line coverage
+report (open `index.html`). Locally: `uv run pytest -m "not eval" --cov --cov-report=html`
+writes it to `htmlcov/`. It is generated, never hand-edited: the `actual` and `status`
 columns come from the run itself, so the report cannot claim a result the suite did not
 produce.
 

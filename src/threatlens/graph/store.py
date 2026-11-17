@@ -61,11 +61,13 @@ def redact_dsn(url: str) -> str:
     connection needs. A DSN with no password is returned unchanged.
 
     A URL that cannot be parsed is hidden entirely rather than printed as-is: if the
-    password cannot be located, no part of the string can be shown safely.
+    password cannot be located, no part of the string can be shown safely. SQLAlchemy
+    signals a malformed URL with ArgumentError, but a non-numeric port surfaces as a
+    ValueError from int() — catching only the first let that shape crash the caller.
     """
     try:
         parsed = make_url(url)
-    except ArgumentError:
+    except (ArgumentError, ValueError):
         return "****"
     return parsed.render_as_string(hide_password=True) if parsed.password else url
 

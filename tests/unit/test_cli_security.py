@@ -72,13 +72,26 @@ def test_a_dsn_without_a_password_is_shown_unchanged(monkeypatch: pytest.MonkeyP
     assert shown == "postgresql+psycopg://localhost/threatlens"
 
 
-def test_an_unparseable_dsn_is_hidden_rather_than_printed(monkeypatch: pytest.MonkeyPatch):
-    """If the URL cannot be parsed, its password cannot be located — so none of it is shown.
-    Printing it as-is would be the unsafe fallback."""
-    monkeypatch.setenv("DATABASE_URL", f"not a url :{PASSWORD}@")
+@pytest.mark.parametrize(
+    "dsn",
+    [
+        f"not a url :{PASSWORD}@",
+        f"postgresql://threatlens:{PASSWORD}@localhost:not-a-port/threatlens",
+    ],
+    ids=["garbage", "non-numeric-port"],
+)
+def test_an_unparseable_dsn_is_hidden_and_the_command_still_works(monkeypatch, dsn):
+    """If the URL cannot be parsed, its password cannot be located, so none of it is shown.
+
+    Asserts the command *succeeded* and printed the mask. An earlier version only checked
+    that the password was absent from the output — which a crash satisfies too, so the
+    non-numeric-port case crashed `config` with a ValueError while this test stayed green.
+    """
+    monkeypatch.setenv("DATABASE_URL", dsn)
     get_settings.cache_clear()
     try:
-        out = CliRunner().invoke(app, ["config", "--json"]).output
+        result = CliRunner().invoke(app, ["config", "--json"])
     finally:
         get_settings.cache_clear()
-    assert PASSWORD not in out
+    assert result.exit_code == 0, repr(result.exception)
+    assert json.loads(result.output)["database_url"] == "****"
