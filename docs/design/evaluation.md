@@ -58,7 +58,7 @@ every row differs by exactly one component:
 
 Fill with real measured numbers. An empty cell is honest; a guessed cell is fraud.
 
-**One LLM provider per table.** Configs A–D are LLM-free; any row that uses a model uses the
+**One LLM provider per table.** Configs A–D are LLM-free; any row that uses an LLM uses the
 same provider and model as every other row in that table. Mixing providers across rows
 confounds the comparison. Provider is a separate axis — compare providers by running the
 whole table again.

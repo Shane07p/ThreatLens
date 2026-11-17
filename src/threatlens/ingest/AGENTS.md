@@ -4,8 +4,9 @@ Adds to the root [AGENTS.md](../../../AGENTS.md). Background:
 [docs/design/data-sources.md](../../../docs/design/data-sources.md) and
 [docs/design/graph-schema.md](../../../docs/design/graph-schema.md).
 
-This directory turns upstream snapshots into nodes and edges. It is the only code allowed
-to touch the network, and it runs offline before any query — never at query time.
+This directory turns upstream snapshots into nodes and edges. It is the only code that
+fetches threat-intelligence data, and it runs offline before any query — never at query
+time. (LLM provider calls are a separate concern and belong to `llm/`.)
 
 ## Shape
 
