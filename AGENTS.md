@@ -68,7 +68,7 @@ CI or review rejects a change that breaks one of these.
 | Never read or regenerate `data/eval/holdout.jsonl` outside `eval/` | regenerating it invalidates every published number |
 | Snapshots only — query-time code never calls NVD, MITRE, or GitHub | results must be reproducible offline |
 | No secrets in code, tests, or commits; `.env` only | the repository is public — a pushed secret is compromised |
-| No AI attribution in commits, PRs, or tags | commits are authored by the maintainers |
+| No AI attribution in commits, PRs, code, or tags — no co-author lines, and no naming an AI tool as the source of a change or a finding | the maintainers author every change; describe what changed and why, not which tool suggested it |
 | No phase numbers, task ids, or decision ids in code comments | they rot and mean nothing to a reader |
 
 Details: [docs/conventions/code.md](docs/conventions/code.md),
