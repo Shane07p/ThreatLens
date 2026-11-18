@@ -19,15 +19,17 @@ function to `store.py` and call it.
 
 ## Traversal traps
 
-- `DISTINCT ON (id)` forces `ORDER BY` to lead with `id`. Keep it in a subquery, then order
-  by cost and apply `LIMIT` outside. Collapsed into one level, the budget keeps the
-  alphabetically first nodes rather than the cheapest — wrong only when the budget binds,
-  which is exactly when nobody is testing.
-- The `NOT dst = ANY(path)` guard stops a path revisiting a node. It bounds path *length*,
-  not the *number* of paths, and it is not what makes the walk terminate — `max_depth` is.
-- **`node_budget` caps the output, not the work.** The CTE enumerates every simple path up
-  to `max_depth`, deduplicates, sorts, and only then applies `LIMIT`. Twenty-five densely
-  connected nodes at depth 4 produce 267,745 intermediate rows to return a budget of one.
-  Densely derived edges such as `CHAINS_TO` make that the realistic shape, not a corner case.
-  Until the budget is enforced during expansion and a statement timeout is set, measure
-  before raising `max_depth`, and pass it explicitly in evaluation runs.
+- **The budget bounds the work.** `traverse` expands one depth at a time and keeps only the
+  cheapest `node_budget` routes before expanding again. Do not turn it back into one
+  recursive CTE: Postgres cannot apply a budget inside the recursive term, so the CTE
+  enumerated every simple path first (3.9 s p95 at depth 4 on the real graph, now 36 ms).
+  See D20.
+- **The pruning is exact only while every step costs something.** It relies on
+  `1 / max(weight, 0.01)` being positive. A zero- or negative-cost step, a cost that can
+  shrink along a route, or a different cost function needs the argument in D20 redone,
+  and `test_traversal_properties.py` must still pass against its unpruned reference.
+- **Ties are part of the contract.** Results sort by cost, then depth, then id, and a node
+  reached by equally cheap routes reports the shortest. Changing the sort key changes
+  which nodes survive when the budget binds — exactly when nobody is looking.
+- The timing test on a dense graph is the only thing that proves the bound. A results-only
+  test passes for the exhaustive walk too.

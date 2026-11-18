@@ -33,7 +33,8 @@ That defeats reproducibility, which is the one thing an eval-driven project cann
 **Why:** graph filter *then* vector rank is one query in one system. Neo4j splits graph and
 vectors across two stores and two round trips, and the retrieval pipeline restricts vector
 search to subgraph node ids on every query — cheap in SQL, awkward across a boundary.
-Recursive CTEs cover the traversal depth this project needs (≤3 hops).
+Traversal over the edge table covers the depth this project needs (≤3 hops); D20
+explains why it is a level-by-level walk rather than one recursive CTE.
 
 ---
 
@@ -252,6 +253,9 @@ teaches the team to ignore the pipeline. Eval runs are deliberate and manual.
 
 ### D17 — The traversal cycle guard is a cost bound, not a termination bound
 
+*Superseded in part by D20: the walk is no longer a recursive CTE. The reasoning about
+what the guard bounds still explains why the old query blew up.*
+
 [graph-schema.md](graph-schema.md) says of `NOT e.dst = ANY(w.path)`: *"Cycle guard is not
 optional — without this it never terminates."* That reasoning is wrong, and the correction
 matters because it changes what has to be tested.
@@ -322,3 +326,48 @@ Mixed, but not noise-dominated, so the threshold stays.
 - Density has a latency cost. Traversing `CHAINS_TO` from one technique measures 19 ms at
   depth 1, 34 ms at depth 2 and **494 ms at depth 3** — roughly 15× per level. The
   `max_depth=3` default is now load-bearing for latency as well as for semantics.
+  (D20 removed that cost: depth 3 now runs at a 29 ms p95.)
+
+---
+
+### D20 — Traversal walks one level at a time and prunes to the budget
+
+**Spec says:** recursive SQL CTEs for traversal.
+
+**We do:** one indexed query per depth for the arcs leaving the frontier, with Python keeping
+the cheapest route to each node and carrying only the cheapest `node_budget` routes into the
+next level (#44).
+
+**Why:** the recursive CTE enumerated every simple path up to `max_depth`, then
+deduplicated, sorted and applied `LIMIT`. `node_budget` capped the output, not the work.
+Postgres allows no aggregation, `DISTINCT ON` or `LIMIT` inside the recursive term, so the
+budget could not be enforced inside the CTE. Measured on the real graph, 60 seed techniques
+walking `CHAINS_TO` with a budget of 200:
+
+| Depth | CTE p95 | CTE max | Level walk p95 | Level walk max |
+|---|---|---|---|---|
+| 3 | 188 ms | 306 ms | 29 ms | 30 ms |
+| 4 | 3,898 ms | 4,993 ms | 36 ms | 39 ms |
+
+**Why the pruning cannot change the answer:** every step costs `1 / max(weight, 0.01)`,
+which is positive. If a route is dropped at some level, at least `node_budget` other nodes
+were already reached more cheaply. Anything the dropped route leads to costs more than all
+of them, so it could never make the final cut. A property test compares the walk against an
+unpruned brute-force enumeration on random small graphs, with weights whose inverses are
+exact so that ties are real ties.
+
+**Consequences:**
+- A walk is `max_depth + 2` round trips instead of one. Locally that is under a millisecond
+  each, far less than what the CTE spent enumerating paths.
+- Among equally cheap routes the shortest is reported. The CTE reported an arbitrary one:
+  119 nodes across 240 sampled walks had a different `depth` for that reason alone.
+- Costs are computed in Python from the weights as Postgres sends them (`0.3`, not float4's
+  `0.30000001`). They differ from the CTE's in the seventh significant digit, and one
+  real-graph walk broke a tie at the budget boundary differently: the CTE ranked two
+  cost-5.0 routes apart by that rounding noise, while the walk treats them as a tie and
+  breaks it by id.
+- No statement timeout was added. Each level queries at most `node_budget` frontier ids
+  through the `(src, kind)` and `(dst, kind)` indexes, so no single statement can run away.
+  A timeout would only guard against a misconfigured `node_budget`.
+- Nothing about how the results are used changes. `traverse` keeps its signature, and the
+  CLI, `chains()` and every existing assertion are untouched.
