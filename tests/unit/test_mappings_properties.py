@@ -64,11 +64,12 @@ def test_every_token_is_either_kept_or_counted_never_both_never_neither(data, to
     assert invalid == len(tokens) - len(expected_valid)
 
 
+WEIGHTS = (1.0, 0.5, 0.5, 0.25)  # primary, secondary, exploitation, uncategorized
+
 rows = st.lists(
     st.tuples(
         st.integers(1, 30),
-        st.lists(technique_ids, max_size=3),
-        st.lists(technique_ids, max_size=3),
+        st.tuples(*(st.lists(technique_ids, max_size=3) for _ in WEIGHTS)),
     ),
     min_size=1,
     max_size=25,
@@ -81,10 +82,11 @@ def test_each_pair_appears_once_at_its_strongest_weight(rows, bom):
     per (CVE, technique) pair, at the highest weight it was listed with."""
     expected: dict[tuple[str, str], float] = {}
     lines = ["CVE ID,Primary Impact,Secondary Impact,Exploitation Technique,Uncategorized,Phase"]
-    for cve_n, primary, secondary in rows:
+    for cve_n, columns in rows:
         cve = f"CVE-2020-{cve_n:04d}"
-        lines.append(f'{cve},"{"; ".join(primary)}","{"; ".join(secondary)}",,,')
-        for ids, weight in ((primary, 1.0), (secondary, 0.5)):
+        cells = ",".join(f'"{"; ".join(ids)}"' for ids in columns)
+        lines.append(f"{cve},{cells},")
+        for ids, weight in zip(columns, WEIGHTS, strict=True):
             for tid in ids:
                 key = (f"cve:{cve}", f"technique:{tid}")
                 expected[key] = max(expected.get(key, 0.0), weight)

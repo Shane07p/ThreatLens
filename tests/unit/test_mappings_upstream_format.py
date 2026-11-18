@@ -79,17 +79,26 @@ def test_every_destination_is_a_well_formed_technique_id():
 
 
 def test_a_cve_listed_on_two_rows_yields_one_edge_per_technique():
-    """CVE-2018-11049 appears twice upstream — once mapped, once empty."""
+    """CVE-2018-11049 appears twice upstream: once with a primary impact, once with only an
+    Uncategorized sub-technique."""
     edges, _ = parse_mappings_csv(UPSTREAM)
     for_cve = [e for e in edges if e.src == "cve:CVE-2018-11049"]
-    assert [(e.dst, e.weight) for e in for_cve] == [("technique:T1574", 1.0)]
+    assert [(e.dst, e.weight) for e in for_cve] == [
+        ("technique:T1574", 1.0),
+        ("technique:T1574.008", 0.25),
+    ]
 
 
 def test_the_sample_produces_exactly_the_expected_edges():
-    """Read by hand against the fixture: 2+2 ordinary, 2 from a split primary cell, 1+2 from
-    CVE-2019-1942, 1 from the duplicated CVE."""
+    """Read by hand against the fixture, column by column:
+
+    - impact columns: 2+2 ordinary, 2 from a split primary cell, 1+2 from CVE-2019-1942,
+      1 from the duplicated CVE (10)
+    - Exploitation Technique: 1+1, 2 from each of two split cells (6)
+    - Uncategorized: 1 on the duplicated CVE's second row (1)
+    """
     edges, _ = parse_mappings_csv(UPSTREAM)
-    assert len(edges) == 10
+    assert len(edges) == 17
     assert len(pairs(edges)) == len(edges), "no (cve, technique) pair may appear twice"
 
 
@@ -195,10 +204,14 @@ def test_the_scoped_cve_collector_reads_the_bom_file_too():
 @pytest.mark.slow
 @pytest.mark.skipif(not REAL_FILE.exists(), reason="mappings snapshot not fetched")
 def test_the_real_snapshot_produces_its_full_edge_set():
-    """839 upstream rows hold 658 distinct (CVE, technique) pairs once compound cells are
-    split. A loose floor rather than the exact count, so an upstream refresh does not turn
-    this red on its own."""
+    """839 upstream rows hold 1,682 distinct (CVE, technique) pairs across the four technique
+    columns once compound cells are split (658 from the two impact columns alone). A loose
+    floor rather than the exact count, so an upstream refresh does not turn this red on its
+    own.
+
+    The impact columns are clean. `Uncategorized` carries 23 malformed tokens (`T1078.003.`,
+    `TT1565`, `T828`), each counted as skipped, so `skipped` is bounded rather than zero."""
     edges, skipped = parse_mappings_csv(REAL_FILE)
-    assert len(edges) > 600
-    assert skipped == 0
+    assert len(edges) > 1500
+    assert skipped < 50
     assert all(TECHNIQUE_ID.match(e.dst) for e in edges)

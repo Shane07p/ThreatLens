@@ -47,7 +47,7 @@ belongs in a module where it can be tested without a terminal.
 | `fetch.py` | `fetch_url`, `fetch_scoped_nvd`, `TokenBucket` | Only network code in the project. Pins sha256 in `data/manifest.json`. |
 | `attack.py` | `parse_bundle` (pure), `ingest_attack` | STIX 2.1 → techniques, tactics, mitigations, actors, software. |
 | `nvd.py` | `parse_cve_record` (pure), `ingest_cves`, `load_kev_ids` | CVSS v3.1, falling back to v4.0, then `None`. |
-| `mappings.py` | `parse_mappings_csv` (pure), `partition_edges`, `ingest_mappings` | `ENABLES` edges, primary 1.0 / secondary 0.5. |
+| `mappings.py` | `parse_mappings_csv` (pure), `partition_edges`, `ingest_mappings` | `ENABLES` edges from all four technique columns: primary 1.0, secondary and exploitation 0.5, uncategorized 0.25. |
 
 **Invariant:** parsers are pure; writes go through `graph/store.py`; every skip is counted,
 and out-of-scope is never counted as loss.

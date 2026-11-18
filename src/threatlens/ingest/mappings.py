@@ -5,14 +5,15 @@ between the CVE world and the ATT&CK world. The same dataset is also the
 labelled ground truth for evaluation: 20% is held out and frozen before any
 retrieval code exists.
 
-Primary impact carries full weight (1.0); secondary impact is a weaker
-signal (0.5). A row with no CVE ID, or a technique token that is not an
-ATT&CK id, is logged and counted as skipped, not silently swallowed — the
-distinction between "ignored" and "lost" matters for data quality.
+All four technique columns become edges, weighted by how directly each ties
+the CVE to the technique: primary impact 1.0, secondary impact and
+exploitation technique 0.5, uncategorized 0.25. Reading only the impact
+columns left 451 of 836 CVEs with no edge, because MITRE filed their
+techniques under `Uncategorized` alone.
 
-Only the two impact columns become edges. The upstream file also carries
-`Exploitation Technique` and `Uncategorized` columns; those are deliberately
-not read, because the design weights a CVE's link to a technique by impact.
+A row with no CVE ID, or a technique token that is not an ATT&CK id, is
+logged and counted as skipped, not silently swallowed — the distinction
+between "ignored" and "lost" matters for data quality.
 
 Must not: import from retrieval/, agent/, or llm/.
 """
@@ -34,8 +35,15 @@ log = logging.getLogger(__name__)
 
 SOURCE = "mappings-explorer"
 
-REQUIRED_COLUMNS = ("CVE ID", "Primary Impact", "Secondary Impact")
-IMPACT_WEIGHTS = (("Primary Impact", 1.0), ("Secondary Impact", 0.5))
+# In file order. When two columns give a technique the same weight, the earlier column
+# names the edge's `impact`, whichever row each listing is on.
+COLUMN_WEIGHTS = (
+    ("Primary Impact", 1.0),
+    ("Secondary Impact", 0.5),
+    ("Exploitation Technique", 0.5),
+    ("Uncategorized", 0.25),
+)
+REQUIRED_COLUMNS = ("CVE ID", *(column for column, _ in COLUMN_WEIGHTS))
 
 # The only shape a technique id may take. Anything else in a technique cell is a malformed
 # token: counted as lost, never turned into a node id that matches nothing.
@@ -99,9 +107,9 @@ def parse_mappings_csv(path: Path) -> tuple[list[Edge], int]:
     """Parse a CVE→ATT&CK mappings CSV into ENABLES edges.
 
     Emits one edge per (CVE, technique) pair, at its strongest weight. A technique listed
-    under both impacts, or on two rows for the same CVE, would otherwise reach the database
-    twice, and the upsert keeps whichever arrives last — so a secondary listing could
-    quietly lower a primary edge to 0.5. Edges come back in file order, so output is
+    under two columns, or on two rows for the same CVE, would otherwise reach the database
+    twice, and the upsert keeps whichever arrives last — so an uncategorized listing could
+    quietly lower a primary edge to 0.25. Edges come back in file order, so output is
     deterministic.
 
     Edges are emitted even for techniques that may not exist in the graph; the loader drops
@@ -119,6 +127,8 @@ def parse_mappings_csv(path: Path) -> tuple[list[Edge], int]:
     """
     rows = read_mappings_rows(path)
     strongest: dict[tuple[str, str], Edge] = {}
+    # Higher weight wins; on equal weight, the earlier column (larger negated index).
+    rank: dict[tuple[str, str], tuple[float, int]] = {}
     skipped = 0
 
     for row in rows:
@@ -130,7 +140,7 @@ def parse_mappings_csv(path: Path) -> tuple[list[Edge], int]:
 
         src = Node.make_id("cve", cve_id)
 
-        for column, weight in IMPACT_WEIGHTS:
+        for position, (column, weight) in enumerate(COLUMN_WEIGHTS):
             cell = row.get(column) or ""
             techniques, invalid = _technique_ids(cell)
             if invalid:
@@ -145,8 +155,9 @@ def parse_mappings_csv(path: Path) -> tuple[list[Edge], int]:
 
             for technique in techniques:
                 key = (src, Node.make_id("technique", technique))
-                current = strongest.get(key)
-                if current is None or weight > current.weight:
+                candidate = (weight, -position)
+                if key not in rank or candidate > rank[key]:
+                    rank[key] = candidate
                     strongest[key] = Edge(
                         src=src,
                         dst=key[1],

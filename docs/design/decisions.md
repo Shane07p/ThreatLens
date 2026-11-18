@@ -371,3 +371,67 @@ exact so that ties are real ties.
   A timeout would only guard against a misconfigured `node_budget`.
 - Nothing about how the results are used changes. `traverse` keeps its signature, and the
   CLI, `chains()` and every existing assertion are untouched.
+
+---
+
+### D21 — Every mapping column is ground truth, weighted by how directly it links
+
+**Spec says:** primary impact 1.0, secondary 0.5; the other columns are not mentioned.
+
+**We do:** read all four technique columns: primary impact 1.0, secondary impact 0.5,
+exploitation technique 0.5, uncategorized 0.25. One edge per (CVE, technique) pair, at its
+strongest weight. Equal weights go to the earlier column, whichever row each listing is on
+(#28).
+
+**Why:** measured on the real file, the impact columns cover only 373 of 836 CVEs. 451 have
+techniques only under `Uncategorized`, which MITRE mapped but did not classify. Under the
+impact-only rule those CVEs have no route into ATT&CK at all, and a 20% holdout is about 75
+CVEs, where a Wilson interval is roughly twice as wide. With all four columns:
+
+| | Impact columns only | All four columns |
+|---|---|---|
+| CVEs with at least one edge | 373 | **822** |
+| Distinct CVE→technique pairs | 658 | **1,682** |
+| 20% holdout | ~75 | **~164** |
+
+The 1,682 pairs by strongest column: 425 primary, 233 secondary, 254 exploitation, 770
+uncategorized. `Exploitation Technique` is arguably the column most relevant to "how would
+an attacker exploit this", so it sits level with secondary impact rather than below it.
+
+**Consequences:**
+- An uncategorized edge says less about how the CVE relates to the technique, which is what
+  its 0.25 weight encodes. Traversal ranks it below every classified edge.
+- The holdout must keep each technique's column (#36), so results can also be reported on
+  the impact-only subset. If a configuration only wins on uncategorized links, that subset
+  shows it.
+- All four columns are now required. A renamed upstream column fails loudly instead of
+  silently dropping more than half the ground truth.
+- `Uncategorized` carries 23 malformed tokens upstream: trailing dots (`T1078.003.`), typos
+  (`T11190`, `TT1565`) and ICS-style ids (`T828`). They are counted as skipped, not guessed
+  at. Recovering the trailing-dot ones would be a separate, deliberate change.
+
+---
+
+### D22 — Link prediction and answering over known links are separate tables
+
+**Spec says:** one ablation table, rows A–E.
+
+**We do:** two tables over the same rows (#29). Table 1 is link prediction: given a held-out
+CVE's description, rank the techniques it enables, scored with `recall@k` and `mrr`. Table
+2 is answering over known links: return the cited chain for a CVE whose links are in the
+graph, scored with `path_correct` and `groundedness`.
+
+**Why:** under `--eval-mode` a held-out CVE has no `ENABLES` edges, so traversal from it
+reaches nothing. Scoring that as question answering would really be scoring a guess at a
+missing link. Folding both into one table also changed more than one variable between rows
+(B → C added traversal and changed anchor resolution), so no gap could be attributed to the
+graph.
+
+**Consequences:**
+- The headline claim ("vector RAG X%, graph Y%") comes from Table 1 only.
+- Within a table, the query text and anchor resolution are identical across rows; each row
+  changes one component.
+- Both a naive and a strong technique-filtered vector baseline are reported (#38, #39), so
+  the graph is measured against the best text-only system.
+- About twice the evaluation work. Table 2 needs the answer and citation layer (#63, #64)
+  before it can be filled.
