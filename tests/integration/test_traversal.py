@@ -153,19 +153,13 @@ def test_a_self_loop_returns_the_node_once(conn):
 
 @pytest.mark.timeout(30)
 def test_a_dense_cycle_does_not_blow_up_the_recursion(conn):
-    """What the `NOT dst = ANY(path)` guard is actually for.
+    """A deep walk over a fully connected cycle returns, and every route stays simple.
 
-    The guard is often described as what stops a cycle recursing forever. It is not —
-    `max_depth` already bounds that, and a route that revisits a node always costs more
-    than the one that did not, so `DISTINCT ON ... ORDER BY cost` would discard it anyway.
-    Remove the guard and every assertion about *results* still passes.
-
-    What it stops is the row count. Six fully-connected nodes at depth 10 is six times
-    five-to-the-tenth walk rows without the guard — tens of millions, from a graph of
-    thirty edges. With it, a path cannot repeat a node, so nothing longer than six hops
-    survives. CHAINS_TO makes dense cycles ordinary rather than exotic, so this is the
-    real production shape, and the failure mode is a query that never comes back rather
-    than a wrong answer.
+    `max_depth` is what makes a cyclic walk stop. Without the revisit check a route could
+    loop back through nodes it has already visited. That route always costs more than the
+    one without the loop, so it would never win, but it would still hold a slot in the
+    frontier at every level. CHAINS_TO makes dense cycles the ordinary shape here, not a
+    corner case.
     """
     n = 6
     nodes = [node(f"technique:T{i}") for i in range(n)]
@@ -223,6 +217,28 @@ def test_budget_keeps_the_cheapest_not_the_alphabetically_first(conn):
     assert ids(hops) == ["cve:C1", "technique:T4"]
 
 
+@pytest.mark.timeout(30)
+def test_the_budget_bounds_the_work_not_just_the_result(conn):
+    """Twenty-five fully connected nodes have about 5.4 million simple paths up to depth
+    5. Enumerating all of them and applying the budget afterwards cannot finish inside
+    the statement timeout set here; keeping only the cheapest `node_budget` routes at
+    each depth finishes in milliseconds.
+
+    The timeout is the assertion. A results-only check passes either way, because the
+    exhaustive walk and the bounded one return the same nodes.
+    """
+    n = 25
+    names = [f"technique:T{i:02d}" for i in range(n)]
+    edges = [edge(a, b, "CHAINS_TO") for a in names for b in names if a != b]
+    build(conn, [node(i) for i in names], edges)
+    conn.execute(text("SET LOCAL statement_timeout = '2s'"))
+
+    hops = traverse(conn, ["technique:T00"], ["CHAINS_TO"], max_depth=5, node_budget=10)
+
+    # Every node is one hop away at equal cost, so the tie-break by id picks T01..T09.
+    assert ids(hops) == names[:10]
+
+
 def test_results_are_ordered_by_cost_ascending(conn):
     nodes = [node("cve:C1", "cve"), node("technique:Ta"), node("technique:Tb")]
     build(
@@ -250,6 +266,25 @@ def test_a_node_reachable_twice_is_returned_once_by_its_cheapest_route(conn):
     end = [h for h in hops if h.node.id == "technique:Tend"]
     assert len(end) == 1
     assert end[0].path == ("cve:C1", "technique:Tmid", "technique:Tend")
+
+
+def test_between_equally_cheap_routes_the_shorter_one_is_reported(conn):
+    """One hop at weight 0.5 and two hops at weight 1 both cost exactly 2.0. The walk
+    reports the one-hop route, so depth and path do not depend on which row the
+    database happened to return first. On the real graph this tie is common: 119 nodes
+    across 240 sampled walks hit it."""
+    build(
+        conn,
+        [node("cve:C1", "cve"), node("technique:Tmid"), node("technique:Tend")],
+        [
+            edge("cve:C1", "technique:Tend", weight=0.5),
+            edge("cve:C1", "technique:Tmid", weight=1.0),
+            edge("technique:Tmid", "technique:Tend", "CHAINS_TO", weight=1.0),
+        ],
+    )
+    hops = traverse(conn, ["cve:C1"], ["ENABLES", "CHAINS_TO"], max_depth=3, node_budget=10)
+    end = next(h for h in hops if h.node.id == "technique:Tend")
+    assert (end.cost, end.depth, end.path) == (2.0, 1, ("cve:C1", "technique:Tend"))
 
 
 # --- awkward input ----------------------------------------------------------------------

@@ -57,7 +57,7 @@ and out-of-scope is never counted as loss.
 |---|---|---|
 | `schema.sql` | applied by `init_schema` | Idempotent DDL. `edges` keyed on `(src, dst, kind)`. |
 | `store.py` | `upsert_nodes`, `upsert_edges`, `get_node`, `neighbors`, `record_ingest_run` | Every write is an upsert. |
-| `traverse.py` | `traverse`, `chains`, `Hop` | Recursive CTE over simple paths up to `max_depth`; returns the cheapest route per node. `node_budget` caps the rows returned, not the work done to find them. |
+| `traverse.py` | `traverse`, `chains`, `Hop` | Level-by-level walk up to `max_depth`, keeping only the cheapest `node_budget` routes at each level; returns the cheapest route per node. The budget bounds the work, not just the output (D20). |
 
 **Invariant:** no SQL anywhere else; no string-built SQL here.
 

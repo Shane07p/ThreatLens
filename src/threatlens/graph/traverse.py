@@ -9,6 +9,12 @@ Hand-written on purpose. Nothing off the shelf does bounded, weighted, direction
 multi-hop over a Postgres edge table, and a library's traversal would make the ablation
 table measure that library rather than this design.
 
+The walk expands one depth at a time and keeps only the cheapest `node_budget` routes
+before expanding again, so its work is bounded by the budget, not by how many paths the
+graph contains. The pruning cannot change the answer: every step adds a positive cost, so a
+dropped route costs more than `node_budget` nodes already reached, and so does anything it
+leads to.
+
 Reads only. If something here needs to write, it belongs in `ingest/`.
 """
 
@@ -29,43 +35,30 @@ PATH_EDGE_KINDS = ["ENABLES", "BELONGS_TO", "MITIGATED_BY"]
 # starts at the technique. Answering it means walking the edge the other way.
 ACTOR_EDGE_KINDS = ["USES"]
 
-_WALK = text("""
-    WITH RECURSIVE arcs AS (
-        SELECT src AS from_id, dst AS to_id, weight FROM edges WHERE kind = ANY(:edge_kinds)
-        UNION ALL
-        SELECT dst AS from_id, src AS to_id, weight FROM edges WHERE kind = ANY(:reverse_kinds)
-    ),
-    walk(id, depth, path, cost) AS (
-        SELECT n.id, 0, ARRAY[n.id], 0.0::float8
-        FROM nodes n
-        WHERE n.id = ANY(:anchors)
-      UNION ALL
-        SELECT a.to_id,
-               w.depth + 1,
-               w.path || a.to_id,
-               w.cost + (1.0 / GREATEST(a.weight, 0.01))
-        FROM walk w
-        JOIN arcs a ON a.from_id = w.id
-        WHERE w.depth < :max_depth
-          AND NOT a.to_id = ANY(w.path)
-    )
-    SELECT best.depth, best.path, best.cost,
-           n.id, n.kind, n.external_id, n.stix_id, n.name, n.description,
-           n.attrs, n.source_url
-    FROM (
-        SELECT DISTINCT ON (id) id, depth, path, cost
-        FROM walk
-        ORDER BY id, cost ASC
-    ) best
-    JOIN nodes n ON n.id = best.id
-    ORDER BY best.cost ASC, best.depth ASC, best.id
-    LIMIT :node_budget
+_ANCHORS = text("SELECT id FROM nodes WHERE id = ANY(:anchors)")
+
+# One hop out of the current frontier, in both directions. Served by the (src, kind) and
+# (dst, kind) indexes, and never asked about more than `node_budget` ids at once.
+_ARCS = text("""
+    SELECT src AS from_id, dst AS to_id, weight
+    FROM edges WHERE kind = ANY(:edge_kinds) AND src = ANY(:frontier)
+    UNION ALL
+    SELECT dst AS from_id, src AS to_id, weight
+    FROM edges WHERE kind = ANY(:reverse_kinds) AND dst = ANY(:frontier)
 """)
-# The subquery is load-bearing. DISTINCT ON forces ORDER BY to lead with the
-# distinct key, so collapsing this into one level orders the result by id and the
-# LIMIT then keeps the alphabetically first N nodes rather than the cheapest N —
-# silently returning a worse answer whenever the budget actually binds, and an
-# identical one whenever it does not, which is when you would be testing.
+
+_NODES = text("""
+    SELECT id, kind, external_id, stix_id, name, description, attrs, source_url
+    FROM nodes WHERE id = ANY(:ids)
+""")
+
+# A route to a node: total cost, then the ids from the anchor to it.
+_Route = tuple[float, tuple[str, ...]]
+
+
+def _step_cost(weight: float) -> float:
+    """Inverse weight, so strong edges are cheap. The floor keeps a zero weight finite."""
+    return 1.0 / max(weight, 0.01)
 
 
 @dataclass(frozen=True)
@@ -99,9 +92,9 @@ def traverse(
     `USES` read forwards is "what does this actor do", read backwards it is "who does
     this", and only the second starts from a technique.
 
-    Returns one Hop per reachable node, including the anchors themselves at depth 0,
-    ordered by cost ascending. A node reachable by several routes appears once, via
-    its cheapest one.
+    Returns at most `node_budget` Hops, one per node, including the anchors themselves at
+    depth 0. Each node comes with its cheapest route of at most `max_depth` hops; among
+    equally cheap routes, the shortest. Results are ordered by cost, then depth, then id.
 
     `max_depth` and `node_budget` default to the configured values. They are recorded
     in eval run metadata, so passing them explicitly is how a measured number stays
@@ -121,34 +114,59 @@ def traverse(
         max_depth = settings.max_depth if max_depth is None else max_depth
         node_budget = settings.node_budget if node_budget is None else node_budget
 
-    rows = conn.execute(
-        _WALK,
-        {
-            "anchors": anchors,
-            "edge_kinds": edge_kinds,
-            "reverse_kinds": reverse_kinds,
-            "max_depth": max_depth,
-            "node_budget": node_budget,
-        },
-    )
+    found = conn.execute(_ANCHORS, {"anchors": anchors}).scalars().all()
+    frontier: dict[str, _Route] = {a: (0.0, (a,)) for a in found}
+    best: dict[str, tuple[float, int, tuple[str, ...]]] = {a: (0.0, 0, (a,)) for a in found}
 
-    return [
-        Hop(
-            node=Node(
-                id=r.id,
-                kind=r.kind,
-                external_id=r.external_id,
-                name=r.name,
-                source_url=r.source_url,
-                description=r.description,
-                stix_id=r.stix_id,
-                attrs=r.attrs or {},
-            ),
-            depth=r.depth,
-            path=tuple(r.path),
-            cost=float(r.cost),
+    for depth in range(1, max_depth + 1):
+        if not frontier:
+            break
+        reached: dict[str, _Route] = {}
+        arcs = conn.execute(
+            _ARCS,
+            {
+                "edge_kinds": edge_kinds,
+                "reverse_kinds": reverse_kinds,
+                "frontier": list(frontier),
+            },
+        )
+        for from_id, to_id, weight in arcs:
+            cost, path = frontier[from_id]
+            if to_id in path:  # a route that revisits a node is never the cheapest
+                continue
+            route = (cost + _step_cost(weight), (*path, to_id))
+            if to_id not in reached or route < reached[to_id]:
+                reached[to_id] = route
+
+        # The pruning that bounds the work. A route dropped here costs at least as much
+        # as `node_budget` other nodes already reached, so nothing it leads to can make
+        # the final cut — every step adds a positive cost.
+        kept = sorted(reached.items(), key=lambda item: (item[1][0], item[0]))[:node_budget]
+        frontier = dict(kept)
+        for node_id, (cost, path) in kept:
+            if node_id not in best or cost < best[node_id][0]:
+                best[node_id] = (cost, depth, path)
+
+    ranked = sorted(best.items(), key=lambda item: (item[1][0], item[1][1], item[0]))
+    ranked = ranked[:node_budget]
+    rows = conn.execute(_NODES, {"ids": [node_id for node_id, _ in ranked]})
+    nodes = {
+        r.id: Node(
+            id=r.id,
+            kind=r.kind,
+            external_id=r.external_id,
+            name=r.name,
+            source_url=r.source_url,
+            description=r.description,
+            stix_id=r.stix_id,
+            attrs=r.attrs or {},
         )
         for r in rows
+    }
+
+    return [
+        Hop(node=nodes[node_id], depth=depth, path=path, cost=cost)
+        for node_id, (cost, depth, path) in ranked
     ]
 
 

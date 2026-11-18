@@ -1,8 +1,8 @@
 # Graph schema
 
 One generic `nodes` table and one generic `edges` table. Type-specific fields live in
-`attrs jsonb`. This keeps traversal CTEs polymorphic — one recursive query walks any edge
-type — instead of needing a UNION per node type.
+`attrs jsonb`. This keeps traversal polymorphic — one query walks any edge type — instead
+of needing a UNION per node type.
 
 ## Nodes
 
@@ -90,38 +90,34 @@ re-running an ingest upserts rather than duplicating.
 
 ## Bounded multi-hop traversal
 
-`src/threatlens/graph/traverse.py` wraps this recursive CTE:
+`src/threatlens/graph/traverse.py` walks outward one depth at a time. Each level is one
+indexed query for the arcs leaving the current frontier:
 
 ```sql
-WITH RECURSIVE walk(id, depth, path, cost) AS (
-    SELECT n.id, 0, ARRAY[n.id], 0.0::real
-    FROM nodes n WHERE n.id = ANY(%(anchors)s)
-  UNION ALL
-    SELECT e.dst,
-           w.depth + 1,
-           w.path || e.dst,
-           w.cost + (1.0 / GREATEST(e.weight, 0.01))
-    FROM walk w
-    JOIN edges e ON e.src = w.id
-    WHERE w.depth < %(max_depth)s
-      AND e.kind = ANY(%(edge_kinds)s)
-      AND NOT e.dst = ANY(w.path)          -- cycle guard, required
-)
-SELECT DISTINCT ON (id) id, depth, path, cost
-FROM walk
-ORDER BY id, cost ASC
-LIMIT %(node_budget)s;
+SELECT src AS from_id, dst AS to_id, weight
+FROM edges WHERE kind = ANY(:edge_kinds) AND src = ANY(:frontier)
+UNION ALL
+SELECT dst AS from_id, src AS to_id, weight
+FROM edges WHERE kind = ANY(:reverse_kinds) AND dst = ANY(:frontier)
 ```
 
+Python then keeps the cheapest route to each node reached, drops any route that revisits a
+node, and carries only the cheapest `node_budget` routes into the next level. The result is
+each node's cheapest route of at most `max_depth` hops, the shortest among equally cheap
+ones, ordered by cost, then depth, then id, and cut to `node_budget`.
+
 Notes:
-- **The cycle guard bounds cost, not termination** — see [decisions.md](decisions.md) D17.
-  `max_depth` is what makes a cyclic graph terminate; `NOT e.dst = ANY(w.path)` is what keeps
-  the intermediate `walk` relation from reaching tens of millions of rows on a dense
-  `CHAINS_TO` cycle. Removing it changes no results, which is why it needs a timing test.
-- Cost is inverse weight, so high-confidence edges are cheaper — `ORDER BY cost` gives you
-  the strongest paths first when the budget truncates. Apply `DISTINCT ON` in a subquery and
-  `LIMIT` outside it: `DISTINCT ON` forces `ORDER BY` to lead with the distinct key, so a
-  single-level query truncates by id and silently keeps the alphabetically first N.
+- **The budget bounds the work, not just the result** — see [decisions.md](decisions.md)
+  D20. Each level touches at most `node_budget` frontier nodes, so a walk costs
+  `max_depth + 2` indexed queries however dense the graph is. The earlier recursive CTE
+  enumerated every simple path before applying the budget: 267,745 rows for a budget of one
+  on 25 dense nodes, and a 3.9 s p95 at depth 4 on the real graph (now 36 ms).
+- **The pruning is exact because every step costs something.** Cost is inverse weight
+  (`1 / max(weight, 0.01)`), so it is always positive. A route dropped at some level costs
+  at least as much as `node_budget` nodes already reached, so nothing it leads to can make
+  the final cut. A zero- or negative-cost step would break that argument; the property
+  test in `tests/integration/test_traversal_properties.py` compares against an unpruned
+  brute-force walk to catch it.
 - Defaults: `max_depth=3`, `node_budget=200`. Tune in `config.py`, not inline.
 
 ## The `CHAINS_TO` derivation

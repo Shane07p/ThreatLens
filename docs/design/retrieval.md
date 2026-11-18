@@ -16,7 +16,8 @@ Return up to `MAX_ANCHORS` (default 3). Zero anchors is a real outcome — say
 
 ## Stage 2 — Graph traversal (the core)
 
-`graph/traverse.py`, backed by the recursive CTE in [graph-schema.md](graph-schema.md).
+`graph/traverse.py`, a budget-bounded level-by-level walk described in
+[graph-schema.md](graph-schema.md).
 
 Default expansion from a CVE anchor:
 
