@@ -159,8 +159,7 @@ def test_a_dense_cycle_does_not_blow_up_the_recursion(conn):
     loop back through nodes it has already visited. That route always costs more than the
     one without the loop, so it would never win, but it would still hold a slot in the
     frontier at every level. CHAINS_TO makes dense cycles the ordinary shape here, not a
-    corner case. The history of why the old recursive query needed this check for its row
-    count is in decisions.md D17.
+    corner case.
     """
     n = 6
     nodes = [node(f"technique:T{i}") for i in range(n)]

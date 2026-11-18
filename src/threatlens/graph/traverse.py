@@ -11,7 +11,9 @@ table measure that library rather than this design.
 
 The walk expands one depth at a time and keeps only the cheapest `node_budget` routes
 before expanding again, so its work is bounded by the budget, not by how many paths the
-graph contains. decisions.md D20 explains why that pruning cannot change the answer.
+graph contains. The pruning cannot change the answer: every step adds a positive cost, so a
+dropped route costs more than `node_budget` nodes already reached, and so does anything it
+leads to.
 
 Reads only. If something here needs to write, it belongs in `ingest/`.
 """
