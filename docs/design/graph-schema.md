@@ -20,7 +20,7 @@ of needing a UNION per node type.
 
 | `kind` | From → To | Source | Weight |
 |---|---|---|---|
-| `ENABLES` | cve → technique | Mappings Explorer | 1.0, or 0.5 for secondary impact |
+| `ENABLES` | cve → technique | Mappings Explorer | 1.0 primary, 0.5 secondary or exploitation, 0.25 uncategorized |
 | `BELONGS_TO` | technique → tactic | `kill_chain_phases` (**not** a relationship object) |1.0|
 | `SUBTECHNIQUE_OF` | technique → technique | relationship `subtechnique-of` | 1.0 |
 | `MITIGATED_BY` | technique → mitigation | relationship `mitigates` (reversed) | 1.0 |

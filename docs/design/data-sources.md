@@ -96,7 +96,8 @@ This dataset does double duty:
 - **It is the labelled ground truth for evaluation.** 20% is split off and frozen in Phase 2
   before any retrieval code exists. See [evaluation.md](evaluation.md).
 
-Weighting: primary impact → `weight 1.0`, secondary impact → `weight 0.5`.
+Weighting (decisions.md D21): primary impact → `1.0`, secondary impact and exploitation
+technique → `0.5`, uncategorized → `0.25`. One edge per pair, at its strongest weight.
 
 ## 4. Optional enrichment (v1.5, only if time allows)
 

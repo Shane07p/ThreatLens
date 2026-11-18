@@ -26,8 +26,32 @@ Rules, non-negotiable:
 3. Nothing outside `src/threatlens/eval/` may open this file. Enforced by a test.
 4. `dev.jsonl` (the 80%) is the only set used for tuning.
 
-Size: ~800 total mappings → roughly 160 holdout CVEs. Small. **Report n and a 95% Wilson
-interval on every accuracy number.** A 6-point gap on n=160 may not be a gap.
+Ground truth is every technique in any of the four mapping columns (decisions.md D21):
+**822 CVEs and 1,682 CVE→technique pairs**, so the holdout is about **164 CVEs**. Each
+holdout technique keeps the column it came from, so every number can also be reported on
+the impact-only subset (373 CVEs) as a robustness check. Small either way. **Report n and a
+95% Wilson interval on every accuracy number.** A 6-point gap on n=164 may not be a gap.
+
+## Two tasks, two tables
+
+The evaluation measures two different things, and they are never mixed in one table
+(decisions.md D22).
+
+**Table 1 — link prediction.** Given a held-out CVE's description, rank the ATT&CK
+techniques it enables. Under `--eval-mode` the CVE's `ENABLES` edges are gone, so no
+configuration can read the answer off the graph; graph configurations may only use the
+graph to expand and re-rank candidates the text retrieval proposed. Scored with `recall@k`
+and `mrr` against the holdout labels. This table carries the headline number.
+
+**Table 2 — answering over known links.** Given a question about a CVE whose links are in
+the graph, return the chain (technique → tactic → mitigation, and the actors that use the
+technique) with citations. Scored with `path_correct` and `groundedness`. This measures
+whether the answer is complete and checkable, not whether a missing link can be guessed.
+
+Held constant across every row of a table: the query text and the anchor-resolution step.
+A row changes exactly one component, so a gap can be attributed to that component alone.
+Both a naive vector baseline and a strong technique-filtered one are reported, so the graph
+is compared with the best text-only system, not only the weakest.
 
 ## Metrics
 
@@ -46,7 +70,8 @@ quality need a model, which is why they run under a separate `-m eval` marker.
 ## The ablation table
 
 Configs are defined once in `eval/configs.py` and share the same pipeline entry point, so
-every row differs by exactly one component:
+every row differs by exactly one component. The table below is laid out for Table 1; Table
+2 uses the same rows with its own metrics:
 
 | # | Configuration | recall@1 | recall@5 | MRR | path_correct | groundedness | p50 latency |
 |---|---|---|---|---|---|---|---|
